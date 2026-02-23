@@ -124,12 +124,22 @@ function showLog(downloadId) {
   } else {
     pre.textContent = '(Log not available)';
   }
-  const modal = new bootstrap.Modal(document.getElementById('logModal'));
+
+  // Mark which download the modal is showing so live SSE lines can be appended
+  pre.dataset.activeId = downloadId;
+
+  const modalEl = document.getElementById('logModal');
+  const modal = new bootstrap.Modal(modalEl);
   modal.show();
 
   // Keep scrolled to bottom when log is live
-  document.getElementById('logModal').addEventListener('shown.bs.modal', () => {
+  modalEl.addEventListener('shown.bs.modal', () => {
     pre.scrollTop = pre.scrollHeight;
+  }, { once: true });
+
+  // Clear active tracking when modal is closed
+  modalEl.addEventListener('hidden.bs.modal', () => {
+    pre.dataset.activeId = '';
   }, { once: true });
 }
 
@@ -137,8 +147,8 @@ function showLog(downloadId) {
 // SSE – subscribe to a download stream
 // ----------------------------------------------------------------
 
-function subscribeToDownload(downloadId) {
-  const entry = { job: { download_id: downloadId, status: 'pending', progress: 0, url: '' }, logLines: [], sse: null };
+function subscribeToDownload(downloadId, knownUrl = '') {
+  const entry = { job: { download_id: downloadId, status: 'pending', progress: 0, url: knownUrl }, logLines: [], sse: null };
   activeDownloads.set(downloadId, entry);
   renderActiveSection();
 
@@ -266,10 +276,8 @@ form.addEventListener('submit', async (e) => {
     if (!res.ok || data.error) {
       toast(data.error || 'Failed to start download', 'danger');
     } else {
-      // Pre-populate URL in the entry so it shows immediately
-      const entry = activeDownloads.get(data.download_id);
-      if (entry) entry.job.url = url;
-      subscribeToDownload(data.download_id);
+      // Pass URL so it shows immediately in the download card
+      subscribeToDownload(data.download_id, url);
       urlInput.value = '';
       toast('Download queued! 🐾', 'success');
     }

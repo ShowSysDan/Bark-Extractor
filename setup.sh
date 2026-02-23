@@ -93,6 +93,23 @@ pip install --upgrade yt-dlp -q
 info "yt-dlp updated to latest version"
 
 # ---------------------------------------------------
+# 4b. Bundled yt-dlp binary
+# ---------------------------------------------------
+section "Checking bundled yt-dlp binary"
+
+if [ -f "./yt-dlp" ]; then
+  chmod +x ./yt-dlp
+  info "Bundled yt-dlp marked executable: $(./yt-dlp --version 2>/dev/null || echo '(version check failed)')"
+else
+  warn "Bundled yt-dlp not found. Downloading from GitHub..."
+  curl -L --retry 3 --retry-delay 2 \
+    -o ./yt-dlp \
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+  chmod +x ./yt-dlp
+  info "yt-dlp downloaded: $(./yt-dlp --version 2>/dev/null || echo '(version check failed)')"
+fi
+
+# ---------------------------------------------------
 # 5. Create directories
 # ---------------------------------------------------
 section "Creating required directories"

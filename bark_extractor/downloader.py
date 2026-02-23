@@ -134,7 +134,7 @@ class DownloadManager:
 
     def cancel_job(self, download_id) -> bool:
         job = self._jobs.get(download_id)
-        if job and job.status == JobStatus.RUNNING:
+        if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
             job.cancel()
             return True
         return False
@@ -196,6 +196,10 @@ class DownloadManager:
 
             with job._lock:
                 job._process = process
+
+            # If cancelled while we were starting the process, kill it now
+            if job.is_cancelled:
+                job.cancel()
 
             for line in process.stdout:
                 line = line.rstrip()

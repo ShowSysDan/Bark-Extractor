@@ -1,29 +1,40 @@
 /* ============================================================
-   Bark Extractor – Custom Styles
+   Bark Extractor – Custom Styles (Dark Theme)
    Dog / Labrador themed MP3 downloader
    ============================================================ */
 
 :root {
   --bark-brown:    #6B4226;
   --bark-amber:    #D4872A;
-  --bark-cream:    #F5EDD8;
-  --bark-dark:     #1E1108;
+  --bark-cream:    #E8D8C0;
+  --bark-dark:     #0e0c0a;
   --bark-green:    #2DA44E;
   --bark-red:      #CF222E;
-  --bark-blue:     #0969DA;
+  --bark-blue:     #4493F8;
+
+  /* Surface layers */
+  --bg-body:       #0e0c0a;
+  --bg-card:       #1a1714;
+  --bg-card-hd:    #221e1a;
+  --bg-input:      #2a2420;
+  --border-color:  #3a332c;
+  --text-primary:  #e8d8c0;
+  --text-muted:    #9b8b7b;
 }
 
 /* ---- Base ---- */
 body {
-  background: #F0EAE0;
+  background: var(--bg-body);
+  color: var(--text-primary);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   min-height: 100vh;
 }
 
 /* ---- Navbar ---- */
 .navbar {
-  background: var(--bark-brown) !important;
-  box-shadow: 0 2px 6px rgba(0,0,0,.35);
+  background: #1a0f07 !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,.6);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .brand-text {
@@ -50,15 +61,56 @@ body {
 
 /* ---- Cards ---- */
 .card {
-  border: 1px solid #D9CFC3;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
   border-radius: .75rem;
 }
 
 .card-header {
-  background: var(--bark-cream);
-  border-bottom: 1px solid #D9CFC3;
+  background: var(--bg-card-hd);
+  border-bottom: 1px solid var(--border-color);
   border-radius: .75rem .75rem 0 0 !important;
   font-size: .95rem;
+  color: var(--bark-cream);
+}
+
+/* ---- Form controls ---- */
+.form-control,
+.form-select {
+  background-color: var(--bg-input);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.form-control:focus,
+.form-select:focus {
+  background-color: var(--bg-input);
+  border-color: var(--bark-amber);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 .2rem rgba(212, 135, 42, .25);
+}
+
+.form-control::placeholder {
+  color: var(--text-muted);
+}
+
+.form-label {
+  color: var(--bark-cream);
+}
+
+/* Checkboxes */
+.form-check-input {
+  background-color: var(--bg-input);
+  border-color: var(--border-color);
+}
+
+.form-check-input:checked {
+  background-color: var(--bark-amber);
+  border-color: var(--bark-amber);
+}
+
+.form-check-label {
+  color: var(--text-primary);
 }
 
 /* ---- Primary button (amber) ---- */
@@ -75,10 +127,49 @@ body {
   color: #fff;
 }
 
+/* ---- Outline buttons ---- */
+.btn-outline-secondary {
+  color: var(--text-muted);
+  border-color: var(--border-color);
+}
+
+.btn-outline-secondary:hover {
+  background-color: var(--bg-input);
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.btn-outline-primary {
+  color: var(--bark-amber);
+  border-color: var(--bark-amber);
+}
+
+.btn-outline-primary:hover {
+  background-color: var(--bark-amber);
+  border-color: var(--bark-amber);
+  color: #fff;
+}
+
+.btn-outline-danger {
+  color: var(--bark-red);
+  border-color: var(--bark-red);
+}
+
+.btn-outline-danger:hover {
+  background-color: var(--bark-red);
+  color: #fff;
+}
+
+.btn-success {
+  background-color: var(--bark-green);
+  border-color: var(--bark-green);
+  color: #fff;
+}
+
 /* ---- Active download item ---- */
 .download-item {
   padding: 1rem 1.25rem;
-  border-bottom: 1px solid #E8E0D6;
+  border-bottom: 1px solid var(--border-color);
   transition: background .15s;
 }
 
@@ -87,12 +178,12 @@ body {
 }
 
 .download-item.status-completed {
-  background: #f0faf4;
+  background: #0f1f14;
 }
 
 .download-item.status-failed,
 .download-item.status-cancelled {
-  background: #fff8f8;
+  background: #1a0f0f;
 }
 
 .download-title {
@@ -106,7 +197,7 @@ body {
 
 .download-url {
   font-size: .75rem;
-  color: #6B6259;
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -116,7 +207,7 @@ body {
 .progress {
   height: 8px;
   border-radius: 4px;
-  background: #E8E0D6;
+  background: #2e2822;
 }
 
 .progress-bar {
@@ -138,15 +229,33 @@ body {
   letter-spacing: .4px;
 }
 
-.status-pending   { background:#EFF3FF; color:#0969DA; }
-.status-running   { background:#FFF3CD; color:#856404; }
-.status-completed { background:#DCFCE7; color:#166534; }
-.status-failed    { background:#FEE2E2; color:#991B1B; }
-.status-cancelled { background:#F3F4F6; color:#374151; }
+.status-pending   { background:#1a2640; color:#4493F8; }
+.status-running   { background:#2e2208; color:#D4872A; }
+.status-completed { background:#0f231a; color:#3fb369; }
+.status-failed    { background:#2e0f0f; color:#f87171; }
+.status-cancelled { background:#1e1e1e; color:#9b9b9b; }
 
 /* ---- File table ---- */
-#filesTable tbody tr:hover {
-  background: #FAF5EE;
+.table {
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+.table-hover > tbody > tr:hover > * {
+  background-color: #251f1a;
+  color: var(--text-primary);
+}
+
+thead.table-light,
+.table-light {
+  background-color: var(--bg-card-hd) !important;
+  color: var(--text-muted) !important;
+  border-color: var(--border-color) !important;
+}
+
+.table > :not(caption) > * > * {
+  border-bottom-color: var(--border-color);
+  background-color: transparent;
 }
 
 .file-name {
@@ -156,17 +265,32 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-primary);
 }
 
 .folder-badge {
   font-size: .7rem;
-  background: #EDE8DF;
-  color: #6B4226;
+  background: #2e2418;
+  color: var(--bark-amber);
   border-radius: .3rem;
   padding: .15em .45em;
 }
 
 /* ---- Log modal ---- */
+.modal-content {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.modal-header {
+  border-bottom-color: var(--border-color);
+}
+
+.btn-close {
+  filter: invert(1) brightness(.7);
+}
+
 .log-pre {
   background: #1E1108;
   color: #E8D8C0;
@@ -180,13 +304,26 @@ body {
   border-radius: 0 0 .5rem .5rem;
 }
 
+/* ---- Toast ---- */
+.toast {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+/* ---- Badges ---- */
+.badge.bg-secondary {
+  background-color: #3a332c !important;
+  color: var(--text-muted);
+}
+
 /* ---- Spinner tweak ---- */
 .spinner-border-sm { width: .9rem; height: .9rem; border-width: .15em; }
 
 /* ---- Meta info row ---- */
 .meta-info {
   font-size: .75rem;
-  color: #8A7E74;
+  color: var(--text-muted);
   gap: .75rem;
 }
 
@@ -204,10 +341,21 @@ body {
 }
 
 .btn-log {
-  border-color: #9B8C80;
-  color: #6B5C50;
+  border-color: #4a3c30;
+  color: var(--text-muted);
   padding: .15rem .5rem;
   font-size: .75rem;
+}
+
+.btn-log:hover {
+  background: #3a2e24;
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* ---- Loading / empty states ---- */
+#filesLoading, #filesEmpty {
+  color: var(--text-muted);
 }
 
 /* ---- Responsive tweaks ---- */
