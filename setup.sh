@@ -130,15 +130,51 @@ else
 fi
 
 # ---------------------------------------------------
+# 7. Make BarkExtractor executable
+# ---------------------------------------------------
+section "Preparing BarkExtractor"
+chmod +x ./BarkExtractor
+info "BarkExtractor marked executable"
+
+# ---------------------------------------------------
+# 8. Install systemd service
+# ---------------------------------------------------
+section "Installing systemd service"
+
+WORKDIR="$(cd "$(dirname "$0")" && pwd)"
+SERVICE_USER="${SUDO_USER:-$(whoami)}"
+SERVICE_FILE="/etc/systemd/system/bark-extractor.service"
+
+if command -v systemctl &>/dev/null; then
+  # Generate the service file from the template
+  sed -e "s|__USER__|${SERVICE_USER}|g" \
+      -e "s|__WORKDIR__|${WORKDIR}|g" \
+      bark-extractor.service > /tmp/bark-extractor.service
+
+  sudo cp /tmp/bark-extractor.service "$SERVICE_FILE"
+  rm -f /tmp/bark-extractor.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable bark-extractor.service
+  sudo systemctl start bark-extractor.service
+  info "Service installed, enabled, and started"
+  info "  Status:  sudo systemctl status bark-extractor"
+  info "  Logs:    sudo journalctl -u bark-extractor -f"
+else
+  warn "systemd not available – skipping service install."
+  warn "Start manually:  source .venv/bin/activate && ./BarkExtractor"
+fi
+
+# ---------------------------------------------------
 # Done
 # ---------------------------------------------------
 echo ""
 echo -e "${BOLD}${GREEN}Setup complete!${RESET}"
 echo ""
-echo "  Start Bark Extractor with:"
+echo "  Bark Extractor is running as a systemd service."
+echo "  Open:  http://localhost:5100"
+echo ""
+echo "  Manual start (if not using service):"
 echo ""
 echo "    source .venv/bin/activate"
-echo "    python app.py"
-echo ""
-echo "  Then open:  http://localhost:5100"
+echo "    ./BarkExtractor"
 echo ""

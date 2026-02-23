@@ -10,6 +10,7 @@ A yt-dlp powered MP3 downloader with a dark web UI. Download audio from YouTube 
 - Stop button cancels a running or pending download and cleans up partial files
 - Persistent MP3 library shared across all users — newest files listed first
 - Checkbox selection for bulk download or bulk delete
+- Runs as a systemd service — starts on boot, restarts on failure
 - Dark, dog-themed UI
 
 ## Prerequisites
@@ -37,15 +38,35 @@ bash setup.sh
 4. Ensure the bundled `yt-dlp` binary is executable (downloads it if missing)
 5. Create `downloads/` and `sessions/` directories
 6. Copy `.env.example` → `.env`
+7. Install, enable, and start a **systemd service** (`bark-extractor`)
 
-Then start the server:
+After setup completes, open **http://localhost:5100** in your browser.
+
+## Service Management
+
+```bash
+# Check status
+sudo systemctl status bark-extractor
+
+# View live logs
+sudo journalctl -u bark-extractor -f
+
+# Restart after config change
+sudo systemctl restart bark-extractor
+
+# Stop the service
+sudo systemctl stop bark-extractor
+
+# Disable auto-start on boot
+sudo systemctl disable bark-extractor
+```
+
+### Manual Start (without systemd)
 
 ```bash
 source .venv/bin/activate
-python app.py
+./BarkExtractor
 ```
-
-Open **http://localhost:5100** in your browser.
 
 ## Configuration
 
@@ -65,7 +86,7 @@ All settings live in `.env` (created from `.env.example` by `setup.sh`):
 
 ```
 Bark-Extractor/
-├── app.py                   # Flask app, routes, SSE logic
+├── BarkExtractor            # Main executable (Flask app, routes, SSE logic)
 ├── bark_extractor/
 │   ├── downloader.py        # DownloadManager, job lifecycle, yt-dlp subprocess
 │   └── file_manager.py      # MP3 listing, serving, deletion
@@ -74,6 +95,7 @@ Bark-Extractor/
 ├── static/
 │   ├── css/style.css        # Dark theme
 │   └── js/app.js            # Frontend logic (SSE, file table, forms)
+├── bark-extractor.service   # systemd unit file (template)
 ├── yt-dlp                   # Bundled Linux yt-dlp binary
 ├── yt-dlp.exe               # Bundled Windows yt-dlp binary
 ├── setup.sh                 # One-shot install script
