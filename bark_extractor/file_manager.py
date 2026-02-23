@@ -4,9 +4,10 @@ Handles listing, serving, and deleting downloaded MP3 files.
 """
 
 import os
-import uuid
 import hashlib
 from datetime import datetime
+
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".opus", ".flac", ".ogg", ".wav"}
 
 
 class FileManager:
@@ -30,7 +31,7 @@ class FileManager:
             dirs[:] = [d for d in dirs if not d.startswith(".")]
 
             for fname in files:
-                if not fname.lower().endswith(".mp3"):
+                if os.path.splitext(fname)[1].lower() not in AUDIO_EXTENSIONS:
                     continue
                 fpath = os.path.join(root, fname)
                 rel = os.path.relpath(fpath, self.downloads_dir)

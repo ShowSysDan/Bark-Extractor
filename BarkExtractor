@@ -46,6 +46,16 @@ YTDLP_PATH = os.getenv("YTDLP_PATH", "yt-dlp")
 PORT = int(os.getenv("PORT", 5100))
 SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
 
+SUPPORTED_FORMATS = ("mp3", "m4a", "opus", "flac", "ogg", "wav")
+_AUDIO_MIME = {
+    ".mp3":  "audio/mpeg",
+    ".m4a":  "audio/mp4",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".ogg":  "audio/ogg",
+    ".wav":  "audio/wav",
+}
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
@@ -175,6 +185,10 @@ def api_start_download():
     if quality not in ("0", "5", "9"):
         quality = "0"
 
+    audio_format = str(data.get("format", "mp3")).lower()
+    if audio_format not in SUPPORTED_FORMATS:
+        audio_format = "mp3"
+
     is_playlist = bool(data.get("is_playlist", False))
     organize_playlist = bool(data.get("organize_playlist", True))
     session_id = get_session_id()
@@ -185,6 +199,7 @@ def api_start_download():
         quality=quality,
         is_playlist=is_playlist,
         organize_playlist=organize_playlist,
+        audio_format=audio_format,
     )
 
     # Start SSE poller thread
@@ -298,7 +313,9 @@ def api_download_file(file_id):
     # Ensure the path is within downloads_dir (path traversal guard)
     if not os.path.realpath(path).startswith(os.path.realpath(DOWNLOADS_DIR)):
         abort(403)
-    return send_file(path, as_attachment=True, mimetype="audio/mpeg")
+    ext = os.path.splitext(path)[1].lower()
+    mime = _AUDIO_MIME.get(ext, "audio/mpeg")
+    return send_file(path, as_attachment=True, mimetype=mime)
 
 
 @app.route("/api/files/<file_id>", methods=["DELETE"])

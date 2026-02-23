@@ -320,6 +320,23 @@ thead.table-light,
 /* ---- Spinner tweak ---- */
 .spinner-border-sm { width: .9rem; height: .9rem; border-width: .15em; }
 
+/* ---- File search input in card header ---- */
+#fileSearch {
+  background-color: var(--bg-input);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+  font-size: .8rem;
+}
+
+#fileSearch:focus {
+  background-color: var(--bg-input);
+  border-color: var(--bark-amber);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 .15rem rgba(212, 135, 42, .2);
+}
+
+#fileSearch::placeholder { color: var(--text-muted); }
+
 /* ---- Meta info row ---- */
 .meta-info {
   font-size: .75rem;

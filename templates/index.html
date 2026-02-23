@@ -42,7 +42,7 @@
         </div>
 
         <div class="row g-3 align-items-end mb-3">
-          <div class="col-sm-4">
+          <div class="col-sm-3">
             <label for="qualitySelect" class="form-label">Audio Quality</label>
             <select class="form-select" id="qualitySelect">
               <option value="0" selected>0 – Best</option>
@@ -51,7 +51,17 @@
             </select>
           </div>
 
-          <div class="col-sm-4 d-flex flex-column gap-2">
+          <div class="col-sm-3">
+            <label for="formatSelect" class="form-label">Format</label>
+            <select class="form-select" id="formatSelect">
+              <option value="mp3" selected>MP3</option>
+              <option value="m4a">M4A (AAC)</option>
+              <option value="opus">Opus</option>
+              <option value="flac">FLAC</option>
+            </select>
+          </div>
+
+          <div class="col-sm-3 d-flex flex-column gap-2">
             <div class="form-check">
               <input class="form-check-input" type="checkbox" id="playlistCheck" />
               <label class="form-check-label" for="playlistCheck">
@@ -66,9 +76,9 @@
             </div>
           </div>
 
-          <div class="col-sm-4 text-sm-end">
+          <div class="col-sm-3 text-sm-end">
             <button type="submit" class="btn btn-primary btn-lg w-100" id="downloadBtn">
-              <i class="bi bi-music-note-beamed me-1"></i> Extract MP3
+              <i class="bi bi-music-note-beamed me-1"></i> Extract Audio
             </button>
           </div>
         </div>
@@ -94,9 +104,12 @@
   <div class="card shadow-sm">
     <div class="card-header d-flex align-items-center gap-2 flex-wrap">
       <i class="bi bi-folder2-open"></i>
-      <strong>Downloaded MP3s</strong>
+      <strong>Downloads</strong>
       <span class="badge bg-secondary ms-1" id="fileCount">0</span>
-      <div class="ms-auto d-flex gap-2 flex-wrap">
+      <span class="text-muted small" id="diskUsage"></span>
+      <div class="ms-auto d-flex gap-2 flex-wrap align-items-center">
+        <input type="search" class="form-control form-control-sm" id="fileSearch"
+               placeholder="Filter files…" style="width:160px" autocomplete="off" />
         <button class="btn btn-sm btn-outline-secondary" id="selectAllBtn" title="Select all">
           <i class="bi bi-check2-all"></i> Select All
         </button>
