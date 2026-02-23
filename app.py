@@ -1,0 +1,319 @@
+"""
+Bark Extractor – Web Service
+A yt-dlp powered MP3 downloader with a web UI served on port 5100.
+"""
+
+import os
+import json
+import time
+import uuid
+import queue
+import threading
+from pathlib import Path
+from datetime import timedelta
+
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    render_template,
+    request,
+    send_file,
+    session,
+    stream_with_context,
+    redirect,
+    url_for,
+)
+from flask_session import Session
+from dotenv import load_dotenv
+
+from bark_extractor.downloader import DownloadManager, JobStatus
+from bark_extractor.file_manager import FileManager
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+load_dotenv()
+
+BASE_DIR = Path(__file__).parent
+DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", str(BASE_DIR / "downloads"))
+SESSIONS_DIR = os.getenv("SESSIONS_DIR", str(BASE_DIR / "sessions"))
+FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+YTDLP_PATH = os.getenv("YTDLP_PATH", "yt-dlp")
+PORT = int(os.getenv("PORT", 5100))
+SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
+
+app = Flask(__name__)
+app.secret_key = SECRET_KEY
+app.config.update(
+    SESSION_TYPE="filesystem",
+    SESSION_FILE_DIR=SESSIONS_DIR,
+    SESSION_PERMANENT=True,
+    PERMANENT_SESSION_LIFETIME=timedelta(days=7),
+    SESSION_FILE_THRESHOLD=500,
+)
+Session(app)
+
+download_manager = DownloadManager(
+    downloads_dir=DOWNLOADS_DIR,
+    ffmpeg_path=FFMPEG_PATH,
+    ytdlp_path=YTDLP_PATH,
+)
+file_manager = FileManager(downloads_dir=DOWNLOADS_DIR)
+
+# Per-download SSE queues: download_id -> list of queue.Queue
+_sse_subscribers: dict[str, list[queue.Queue]] = {}
+_sse_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Session helper
+# ---------------------------------------------------------------------------
+
+def get_session_id() -> str:
+    if "session_id" not in session:
+        session["session_id"] = str(uuid.uuid4())
+    return session["session_id"]
+
+
+# ---------------------------------------------------------------------------
+# SSE helpers
+# ---------------------------------------------------------------------------
+
+def _push_sse(download_id: str, data: dict):
+    """Broadcast an SSE event to all subscribers of download_id."""
+    payload = f"data: {json.dumps(data)}\n\n"
+    with _sse_lock:
+        queues = _sse_subscribers.get(download_id, [])
+        for q in queues:
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                pass
+
+
+def _sse_poller(download_id: str):
+    """
+    Background thread that polls the job and emits SSE events until it finishes.
+    """
+    last_log_idx = 0
+    while True:
+        job = download_manager.get_job(download_id)
+        if not job:
+            _push_sse(download_id, {"type": "error", "message": "Job not found"})
+            break
+
+        # Emit any new log lines
+        with job._lock:
+            new_lines = job.log_lines[last_log_idx:]
+        for line in new_lines:
+            _push_sse(download_id, {"type": "log", "line": line})
+        last_log_idx += len(new_lines)
+
+        # Emit progress
+        _push_sse(download_id, {
+            "type": "progress",
+            "download_id": download_id,
+            "status": job.status,
+            "progress": job.progress,
+            "speed": job.speed,
+            "eta": job.eta,
+            "current_file": job.current_file,
+        })
+
+        if job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+            # Final event
+            _push_sse(download_id, {
+                "type": "done",
+                "download_id": download_id,
+                "status": job.status,
+                "files_downloaded": job.files_downloaded,
+                "error": job.error,
+            })
+            break
+
+        time.sleep(0.5)
+
+    # Signal all subscriber queues to close
+    _push_sse(download_id, {"type": "close"})
+
+    # Clean up subscriber registry after a short delay
+    time.sleep(2)
+    with _sse_lock:
+        _sse_subscribers.pop(download_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Routes – pages
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    get_session_id()  # ensure session is initialised
+    return render_template("index.html")
+
+
+# ---------------------------------------------------------------------------
+# Routes – download API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/download", methods=["POST"])
+def api_start_download():
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "URL is required"}), 400
+
+    quality = str(data.get("quality", "0"))
+    if quality not in ("0", "5", "9"):
+        quality = "0"
+
+    is_playlist = bool(data.get("is_playlist", False))
+    organize_playlist = bool(data.get("organize_playlist", True))
+    session_id = get_session_id()
+
+    job = download_manager.create_job(
+        url=url,
+        session_id=session_id,
+        quality=quality,
+        is_playlist=is_playlist,
+        organize_playlist=organize_playlist,
+    )
+
+    # Start SSE poller thread
+    poller = threading.Thread(
+        target=_sse_poller, args=(job.download_id,), daemon=True
+    )
+    poller.start()
+
+    return jsonify({"download_id": job.download_id, "status": job.status})
+
+
+@app.route("/api/download/<download_id>/stop", methods=["POST"])
+def api_stop_download(download_id):
+    if download_manager.cancel_job(download_id):
+        return jsonify({"ok": True, "message": "Cancellation requested"})
+    return jsonify({"ok": False, "message": "Job not found or already finished"}), 404
+
+
+@app.route("/api/download/<download_id>/status")
+def api_download_status(download_id):
+    job = download_manager.get_job(download_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(job.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Routes – SSE stream
+# ---------------------------------------------------------------------------
+
+@app.route("/api/download/<download_id>/stream")
+def api_download_stream(download_id):
+    """Server-Sent Events stream for a specific download."""
+    q: queue.Queue = queue.Queue(maxsize=200)
+
+    with _sse_lock:
+        if download_id not in _sse_subscribers:
+            _sse_subscribers[download_id] = []
+        _sse_subscribers[download_id].append(q)
+
+    @stream_with_context
+    def generate():
+        try:
+            # Send a heartbeat immediately so the browser connection opens
+            yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+            while True:
+                try:
+                    msg = q.get(timeout=30)
+                except queue.Empty:
+                    # Keep-alive ping
+                    yield ": ping\n\n"
+                    continue
+                yield msg
+                if '"type": "close"' in msg:
+                    break
+        finally:
+            with _sse_lock:
+                subs = _sse_subscribers.get(download_id, [])
+                if q in subs:
+                    subs.remove(q)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes – queue / active downloads
+# ---------------------------------------------------------------------------
+
+@app.route("/api/queue")
+def api_queue():
+    """All active (pending/running) downloads across all sessions."""
+    return jsonify(download_manager.get_active_jobs())
+
+
+@app.route("/api/queue/mine")
+def api_my_queue():
+    session_id = get_session_id()
+    return jsonify(download_manager.get_session_jobs(session_id))
+
+
+# ---------------------------------------------------------------------------
+# Routes – file manager
+# ---------------------------------------------------------------------------
+
+@app.route("/api/files")
+def api_list_files():
+    return jsonify(file_manager.list_files())
+
+
+@app.route("/api/files/<file_id>")
+def api_get_file(file_id):
+    info = file_manager.get_file_info(file_id)
+    if not info:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(info)
+
+
+@app.route("/api/files/<file_id>/download")
+def api_download_file(file_id):
+    """Serve an MP3 to the user's browser as an attachment."""
+    path = file_manager.get_file_path(file_id)
+    if not path:
+        abort(404)
+    # Ensure the path is within downloads_dir (path traversal guard)
+    if not os.path.realpath(path).startswith(os.path.realpath(DOWNLOADS_DIR)):
+        abort(403)
+    return send_file(path, as_attachment=True, mimetype="audio/mpeg")
+
+
+@app.route("/api/files/<file_id>", methods=["DELETE"])
+def api_delete_file(file_id):
+    if file_manager.delete_file(file_id):
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "File not found"}), 404
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    print(f"  Bark Extractor starting on http://0.0.0.0:{PORT}")
+    print(f"  Downloads directory: {DOWNLOADS_DIR}")
+    app.run(host="0.0.0.0", port=PORT, debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")

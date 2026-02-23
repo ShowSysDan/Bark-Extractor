@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bark Extractor 🐾</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+
+<!-- ===== NAVBAR ===== -->
+<nav class="navbar navbar-dark">
+  <div class="container-fluid px-4">
+    <span class="navbar-brand d-flex align-items-center gap-2">
+      <span class="paw">🐾</span>
+      <span class="brand-text">Bark Extractor</span>
+      <small class="text-muted ms-2 d-none d-sm-inline">MP3 Downloader</small>
+    </span>
+    <span class="badge bg-secondary" id="activeCount">0 active</span>
+  </div>
+</nav>
+
+<div class="container-xl px-4 py-4">
+
+  <!-- ===== DOWNLOAD FORM ===== -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-header d-flex align-items-center gap-2">
+      <i class="bi bi-download"></i>
+      <strong>New Download</strong>
+    </div>
+    <div class="card-body">
+      <form id="downloadForm" novalidate>
+
+        <div class="mb-3">
+          <label for="urlInput" class="form-label">YouTube URL</label>
+          <input type="url" class="form-control" id="urlInput"
+                 placeholder="https://www.youtube.com/watch?v=..."
+                 autocomplete="off" required />
+          <div class="invalid-feedback">Please enter a valid URL.</div>
+        </div>
+
+        <div class="row g-3 align-items-end mb-3">
+          <div class="col-sm-4">
+            <label for="qualitySelect" class="form-label">Audio Quality</label>
+            <select class="form-select" id="qualitySelect">
+              <option value="0" selected>0 – Best</option>
+              <option value="5">5 – Medium</option>
+              <option value="9">9 – Low</option>
+            </select>
+          </div>
+
+          <div class="col-sm-4 d-flex flex-column gap-2">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="playlistCheck" />
+              <label class="form-check-label" for="playlistCheck">
+                Download entire playlist
+              </label>
+            </div>
+            <div class="form-check" id="organizeRow" style="display:none!important">
+              <input class="form-check-input" type="checkbox" id="organizeCheck" checked />
+              <label class="form-check-label" for="organizeCheck">
+                Organize in playlist folder
+              </label>
+            </div>
+          </div>
+
+          <div class="col-sm-4 text-sm-end">
+            <button type="submit" class="btn btn-primary btn-lg w-100" id="downloadBtn">
+              <i class="bi bi-music-note-beamed me-1"></i> Extract MP3
+            </button>
+          </div>
+        </div>
+
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== ACTIVE DOWNLOADS ===== -->
+  <div class="card shadow-sm mb-4" id="activeSection" style="display:none">
+    <div class="card-header d-flex align-items-center gap-2">
+      <i class="bi bi-hourglass-split"></i>
+      <strong>Active Downloads</strong>
+    </div>
+    <div class="card-body p-0">
+      <div id="activeList">
+        <!-- filled by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== SERVER FILE MANAGER ===== -->
+  <div class="card shadow-sm">
+    <div class="card-header d-flex align-items-center gap-2 flex-wrap">
+      <i class="bi bi-folder2-open"></i>
+      <strong>Downloaded MP3s</strong>
+      <span class="badge bg-secondary ms-1" id="fileCount">0</span>
+      <div class="ms-auto d-flex gap-2 flex-wrap">
+        <button class="btn btn-sm btn-outline-secondary" id="selectAllBtn" title="Select all">
+          <i class="bi bi-check2-all"></i> Select All
+        </button>
+        <button class="btn btn-sm btn-outline-danger" id="deleteSelectedBtn" style="display:none" title="Delete selected">
+          <i class="bi bi-trash"></i> Delete Selected
+        </button>
+        <button class="btn btn-sm btn-success" id="downloadSelectedBtn" style="display:none">
+          <i class="bi bi-download"></i> Download Selected
+        </button>
+        <button class="btn btn-sm btn-outline-secondary" id="refreshBtn" title="Refresh list">
+          <i class="bi bi-arrow-clockwise"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="card-body p-0">
+      <!-- Loading state -->
+      <div id="filesLoading" class="text-center py-5 text-muted">
+        <div class="spinner-border spinner-border-sm me-2"></div> Loading files…
+      </div>
+      <!-- Empty state -->
+      <div id="filesEmpty" class="text-center py-5 text-muted" style="display:none">
+        <i class="bi bi-music-note-list fs-1 d-block mb-2 opacity-25"></i>
+        No MP3 files yet – extract something above!
+      </div>
+      <!-- File table -->
+      <div id="filesTableWrap" style="display:none">
+        <table class="table table-hover mb-0 align-middle" id="filesTable">
+          <thead class="table-light">
+            <tr>
+              <th style="width:2.5rem">
+                <input type="checkbox" class="form-check-input" id="selectAllChk" />
+              </th>
+              <th>File</th>
+              <th class="d-none d-md-table-cell">Folder</th>
+              <th class="d-none d-sm-table-cell text-end" style="width:7rem">Size</th>
+              <th class="d-none d-lg-table-cell" style="width:11rem">Modified</th>
+              <th style="width:7rem"></th>
+            </tr>
+          </thead>
+          <tbody id="filesTbody">
+            <!-- filled by JS -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<!-- ===== LOG MODAL ===== -->
+<div class="modal fade" id="logModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-terminal me-2"></i>Download Log</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-0">
+        <pre id="logContent" class="log-pre mb-0"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TOAST ===== -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:1100">
+  <div id="toast" class="toast align-items-center" role="alert">
+    <div class="d-flex">
+      <div class="toast-body" id="toastBody"></div>
+      <button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
