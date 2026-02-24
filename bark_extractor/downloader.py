@@ -99,7 +99,11 @@ class DownloadManager:
 
     def __init__(self, downloads_dir, ffmpeg_path="ffmpeg", ytdlp_path="yt-dlp"):
         self.downloads_dir = downloads_dir
-        self.ffmpeg_path = ffmpeg_path
+        # Resolve bare command names (e.g. "ffmpeg") to full paths so yt-dlp
+        # can locate the binary via --ffmpeg-location instead of treating the
+        # name as a relative filesystem path.
+        resolved = shutil.which(ffmpeg_path)
+        self.ffmpeg_path = resolved if resolved else ffmpeg_path
         self.ytdlp_path = ytdlp_path
 
         self._jobs: dict[str, DownloadJob] = {}
