@@ -93,6 +93,23 @@ pip install --upgrade yt-dlp -q
 info "yt-dlp updated to latest version"
 
 # ---------------------------------------------------
+# 4b. Bundled yt-dlp binary
+# ---------------------------------------------------
+section "Checking bundled yt-dlp binary"
+
+if [ -f "./yt-dlp" ]; then
+  chmod +x ./yt-dlp
+  info "Bundled yt-dlp marked executable: $(./yt-dlp --version 2>/dev/null || echo '(version check failed)')"
+else
+  warn "Bundled yt-dlp not found. Downloading from GitHub..."
+  curl -L --retry 3 --retry-delay 2 \
+    -o ./yt-dlp \
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+  chmod +x ./yt-dlp
+  info "yt-dlp downloaded: $(./yt-dlp --version 2>/dev/null || echo '(version check failed)')"
+fi
+
+# ---------------------------------------------------
 # 5. Create directories
 # ---------------------------------------------------
 section "Creating required directories"
@@ -113,15 +130,95 @@ else
 fi
 
 # ---------------------------------------------------
+# 7. Check port availability
+# ---------------------------------------------------
+section "Checking port availability"
+
+DESIRED_PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+DESIRED_PORT="${DESIRED_PORT:-5100}"
+
+is_port_open() {
+  if command -v ss &>/dev/null; then
+    ! ss -tlnp 2>/dev/null | grep -q ":${1} "
+  elif command -v lsof &>/dev/null; then
+    ! lsof -i :"${1}" &>/dev/null
+  elif command -v netstat &>/dev/null; then
+    ! netstat -tlnp 2>/dev/null | grep -q ":${1} "
+  else
+    return 0  # assume open if we can't check
+  fi
+}
+
+if is_port_open "$DESIRED_PORT"; then
+  info "Port $DESIRED_PORT is available"
+else
+  warn "Port $DESIRED_PORT is already in use!"
+  # Try the next 10 ports
+  FOUND=""
+  for TRY_PORT in $(seq $((DESIRED_PORT + 1)) $((DESIRED_PORT + 10))); do
+    if is_port_open "$TRY_PORT"; then
+      FOUND="$TRY_PORT"
+      break
+    fi
+  done
+  if [ -n "$FOUND" ]; then
+    warn "Switching to port $FOUND"
+    sed -i "s/^PORT=.*/PORT=${FOUND}/" .env
+    info "Updated .env → PORT=$FOUND"
+  else
+    warn "Ports ${DESIRED_PORT}-$((DESIRED_PORT + 10)) all in use. Edit PORT in .env manually."
+  fi
+fi
+
+ACTIVE_PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+ACTIVE_PORT="${ACTIVE_PORT:-5100}"
+
+# ---------------------------------------------------
+# 8. Make BarkExtractor executable
+# ---------------------------------------------------
+section "Preparing BarkExtractor"
+chmod +x ./BarkExtractor
+info "BarkExtractor marked executable"
+
+# ---------------------------------------------------
+# 9. Install systemd service
+# ---------------------------------------------------
+section "Installing systemd service"
+
+WORKDIR="$(cd "$(dirname "$0")" && pwd)"
+SERVICE_USER="${SUDO_USER:-$(whoami)}"
+SERVICE_FILE="/etc/systemd/system/bark-extractor.service"
+
+if command -v systemctl &>/dev/null; then
+  # Generate the service file from the template
+  sed -e "s|__USER__|${SERVICE_USER}|g" \
+      -e "s|__WORKDIR__|${WORKDIR}|g" \
+      bark-extractor.service > /tmp/bark-extractor.service
+
+  sudo cp /tmp/bark-extractor.service "$SERVICE_FILE"
+  rm -f /tmp/bark-extractor.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable bark-extractor.service
+  sudo systemctl start bark-extractor.service
+  info "Service installed, enabled, and started"
+  info "  Status:  sudo systemctl status bark-extractor"
+  info "  Logs:    sudo journalctl -u bark-extractor -f"
+else
+  warn "systemd not available – skipping service install."
+  warn "Start manually:  source .venv/bin/activate && ./BarkExtractor"
+fi
+
+# ---------------------------------------------------
 # Done
 # ---------------------------------------------------
 echo ""
 echo -e "${BOLD}${GREEN}Setup complete!${RESET}"
 echo ""
-echo "  Start Bark Extractor with:"
+echo "  Bark Extractor is running as a systemd service."
+echo "  Open:  http://localhost:${ACTIVE_PORT}"
+echo ""
+echo "  Manual start (if not using service):"
 echo ""
 echo "    source .venv/bin/activate"
-echo "    python app.py"
-echo ""
-echo "  Then open:  http://localhost:5100"
+echo "    ./BarkExtractor"
 echo ""

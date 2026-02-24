@@ -1,0 +1,15 @@
+[Unit]
+Description=Bark Extractor – MP3 Downloader Web Service
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__WORKDIR__
+ExecStart=__WORKDIR__/.venv/bin/python __WORKDIR__/BarkExtractor
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=__WORKDIR__/.env
+
+[Install]
+WantedBy=multi-user.target

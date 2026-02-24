@@ -25,6 +25,22 @@ function escHtml(str) {
   return d.innerHTML;
 }
 
+function humanSize(bytes) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let n = bytes;
+  for (const u of units) {
+    if (n < 1024) return `${n.toFixed(1)} ${u}`;
+    n /= 1024;
+  }
+  return `${n.toFixed(1)} TB`;
+}
+
+function updateDiskUsage() {
+  const total = allFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+  const el = document.getElementById('diskUsage');
+  el.textContent = allFiles.length > 0 ? `· ${humanSize(total)} used` : '';
+}
+
 // ----------------------------------------------------------------
 // Active Downloads Manager
 // ----------------------------------------------------------------
@@ -124,12 +140,22 @@ function showLog(downloadId) {
   } else {
     pre.textContent = '(Log not available)';
   }
-  const modal = new bootstrap.Modal(document.getElementById('logModal'));
+
+  // Mark which download the modal is showing so live SSE lines can be appended
+  pre.dataset.activeId = downloadId;
+
+  const modalEl = document.getElementById('logModal');
+  const modal = new bootstrap.Modal(modalEl);
   modal.show();
 
   // Keep scrolled to bottom when log is live
-  document.getElementById('logModal').addEventListener('shown.bs.modal', () => {
+  modalEl.addEventListener('shown.bs.modal', () => {
     pre.scrollTop = pre.scrollHeight;
+  }, { once: true });
+
+  // Clear active tracking when modal is closed
+  modalEl.addEventListener('hidden.bs.modal', () => {
+    pre.dataset.activeId = '';
   }, { once: true });
 }
 
@@ -137,8 +163,8 @@ function showLog(downloadId) {
 // SSE – subscribe to a download stream
 // ----------------------------------------------------------------
 
-function subscribeToDownload(downloadId) {
-  const entry = { job: { download_id: downloadId, status: 'pending', progress: 0, url: '' }, logLines: [], sse: null };
+function subscribeToDownload(downloadId, knownUrl = '') {
+  const entry = { job: { download_id: downloadId, status: 'pending', progress: 0, url: knownUrl }, logLines: [], sse: null };
   activeDownloads.set(downloadId, entry);
   renderActiveSection();
 
@@ -228,6 +254,7 @@ function pollJobStatus(downloadId) {
 const form        = document.getElementById('downloadForm');
 const urlInput    = document.getElementById('urlInput');
 const qualitySel  = document.getElementById('qualitySelect');
+const formatSel   = document.getElementById('formatSelect');
 const playlistChk = document.getElementById('playlistCheck');
 const organizeRow = document.getElementById('organizeRow');
 const organizeChk = document.getElementById('organizeCheck');
@@ -235,6 +262,11 @@ const downloadBtn = document.getElementById('downloadBtn');
 
 playlistChk.addEventListener('change', () => {
   organizeRow.style.setProperty('display', playlistChk.checked ? '' : 'none', 'important');
+});
+
+formatSel.addEventListener('change', () => {
+  const fmt = formatSel.value.toUpperCase();
+  downloadBtn.innerHTML = `<i class="bi bi-music-note-beamed me-1"></i> Extract ${fmt}`;
 });
 
 form.addEventListener('submit', async (e) => {
@@ -257,6 +289,7 @@ form.addEventListener('submit', async (e) => {
       body: JSON.stringify({
         url,
         quality:            qualitySel.value,
+        format:             formatSel.value,
         is_playlist:        playlistChk.checked,
         organize_playlist:  organizeChk.checked,
       }),
@@ -266,10 +299,8 @@ form.addEventListener('submit', async (e) => {
     if (!res.ok || data.error) {
       toast(data.error || 'Failed to start download', 'danger');
     } else {
-      // Pre-populate URL in the entry so it shows immediately
-      const entry = activeDownloads.get(data.download_id);
-      if (entry) entry.job.url = url;
-      subscribeToDownload(data.download_id);
+      // Pass URL so it shows immediately in the download card
+      subscribeToDownload(data.download_id, url);
       urlInput.value = '';
       toast('Download queued! 🐾', 'success');
     }
@@ -309,6 +340,7 @@ async function loadFileList() {
 
   loading.style.display = 'none';
   fileCount.textContent = allFiles.length;
+  updateDiskUsage();
 
   if (allFiles.length === 0) {
     empty.style.display = '';
@@ -335,6 +367,7 @@ async function loadFileList() {
   });
 
   updateSelectionToolbar();
+  filterFiles(); // re-apply any active search after reload
 }
 
 function renderFileRow(f) {
@@ -395,6 +428,7 @@ async function deleteFile(fileId, rowEl) {
       rowEl.remove();
       allFiles = allFiles.filter(f => f.id !== fileId);
       document.getElementById('fileCount').textContent = allFiles.length;
+      updateDiskUsage();
       if (allFiles.length === 0) {
         document.getElementById('filesTableWrap').style.display = 'none';
         document.getElementById('filesEmpty').style.display     = '';
@@ -448,6 +482,20 @@ document.getElementById('deleteSelectedBtn').addEventListener('click', async () 
 
 // Refresh button
 document.getElementById('refreshBtn').addEventListener('click', () => loadFileList());
+
+// ----------------------------------------------------------------
+// File search / filter
+// ----------------------------------------------------------------
+
+function filterFiles() {
+  const q = document.getElementById('fileSearch').value.toLowerCase().trim();
+  $$('#filesTbody tr').forEach(row => {
+    const name = row.querySelector('.file-name')?.textContent.toLowerCase() || '';
+    row.style.display = (!q || name.includes(q)) ? '' : 'none';
+  });
+}
+
+document.getElementById('fileSearch').addEventListener('input', filterFiles);
 
 // ----------------------------------------------------------------
 // Init

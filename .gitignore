@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# App runtime data
+downloads/
+sessions/
+
+# Environment
+.env
+
+# macOS
+.DS_Store
+
+# Partial download temp files
+*.part
+*.ytdl

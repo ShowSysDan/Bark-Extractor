@@ -24,13 +24,14 @@ class JobStatus(str, Enum):
 
 class DownloadJob:
     def __init__(self, download_id, url, session_id, quality="0",
-                 is_playlist=False, organize_playlist=False):
+                 is_playlist=False, organize_playlist=False, audio_format="mp3"):
         self.download_id = download_id
         self.url = url
         self.session_id = session_id
         self.quality = quality
         self.is_playlist = is_playlist
         self.organize_playlist = organize_playlist
+        self.audio_format = audio_format
 
         self.status = JobStatus.PENDING
         self.progress = 0.0
@@ -58,6 +59,7 @@ class DownloadJob:
             "eta": self.eta,
             "current_file": self.current_file,
             "error": self.error,
+            "audio_format": self.audio_format,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "files_downloaded": self.files_downloaded,
@@ -110,7 +112,8 @@ class DownloadManager:
     # ------------------------------------------------------------------
 
     def create_job(self, url, session_id, quality="0",
-                   is_playlist=False, organize_playlist=False) -> DownloadJob:
+                   is_playlist=False, organize_playlist=False,
+                   audio_format="mp3") -> DownloadJob:
         download_id = str(uuid.uuid4())
         job = DownloadJob(
             download_id=download_id,
@@ -119,6 +122,7 @@ class DownloadManager:
             quality=quality,
             is_playlist=is_playlist,
             organize_playlist=organize_playlist,
+            audio_format=audio_format,
         )
         with self._lock:
             self._jobs[download_id] = job
@@ -134,7 +138,7 @@ class DownloadManager:
 
     def cancel_job(self, download_id) -> bool:
         job = self._jobs.get(download_id)
-        if job and job.status == JobStatus.RUNNING:
+        if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
             job.cancel()
             return True
         return False
@@ -197,6 +201,10 @@ class DownloadManager:
             with job._lock:
                 job._process = process
 
+            # If cancelled while we were starting the process, kill it now
+            if job.is_cancelled:
+                job.cancel()
+
             for line in process.stdout:
                 line = line.rstrip()
                 if not line:
@@ -254,7 +262,7 @@ class DownloadManager:
         cmd = [
             self.ytdlp_path,
             "-x",
-            "--audio-format", "mp3",
+            "--audio-format", job.audio_format,
             "--audio-quality", quality,
             "--no-check-certificate",
             "--ffmpeg-location", self.ffmpeg_path,
@@ -315,7 +323,7 @@ class DownloadManager:
 
         for root, _, files in os.walk(self.downloads_dir):
             for fname in files:
-                if not fname.lower().endswith(".mp3"):
+                if not fname.lower().endswith(f".{job.audio_format}"):
                     continue
                 fpath = os.path.join(root, fname)
                 try:
