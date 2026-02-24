@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 
 from bark_extractor.downloader import DownloadManager, JobStatus
 from bark_extractor.file_manager import FileManager
+from bark_extractor import syslog_sender
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -45,6 +46,10 @@ FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 YTDLP_PATH = os.getenv("YTDLP_PATH", "yt-dlp")
 PORT = int(os.getenv("PORT", 5100))
 SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
+
+SYSLOG_ENABLED = os.getenv("SYSLOG_ENABLED", "false").lower() == "true"
+SYSLOG_HOST    = os.getenv("SYSLOG_HOST", "localhost")
+SYSLOG_PORT    = int(os.getenv("SYSLOG_PORT", "514"))
 
 SUPPORTED_FORMATS = ("mp3", "m4a", "opus", "flac", "ogg", "wav")
 _AUDIO_MIME = {
@@ -77,6 +82,8 @@ download_manager = DownloadManager(
     ytdlp_path=YTDLP_PATH,
 )
 file_manager = FileManager(downloads_dir=DOWNLOADS_DIR)
+
+syslog_sender.configure(SYSLOG_ENABLED, SYSLOG_HOST, SYSLOG_PORT)
 
 # Per-download SSE queues: download_id -> list of queue.Queue
 _sse_subscribers: dict[str, list[queue.Queue]] = {}
@@ -139,6 +146,22 @@ def _sse_poller(download_id: str):
         })
 
         if job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+            # Syslog lifecycle event
+            if job.status == JobStatus.COMPLETED:
+                syslog_sender.send(
+                    f"download_completed id={download_id} "
+                    f"files={len(job.files_downloaded)} url={job.url}"
+                )
+            elif job.status == JobStatus.FAILED:
+                syslog_sender.send(
+                    f"download_failed id={download_id} "
+                    f"error={job.error!r} url={job.url}"
+                )
+            elif job.status == JobStatus.CANCELLED:
+                syslog_sender.send(
+                    f"download_cancelled id={download_id} url={job.url}"
+                )
+
             # Final event
             _push_sse(download_id, {
                 "type": "done",
@@ -158,6 +181,85 @@ def _sse_poller(download_id: str):
     time.sleep(2)
     with _sse_lock:
         _sse_subscribers.pop(download_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Settings helpers
+# ---------------------------------------------------------------------------
+
+def _update_env_file(updates: dict):
+    """Update or add key=value pairs in .env, creating the file if needed."""
+    env_path = BASE_DIR / ".env"
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
+
+    updated = set()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in updates:
+            lines[i] = f"{key}={updates[key]}"
+            updated.add(key)
+
+    for key, val in updates.items():
+        if key not in updated:
+            lines.append(f"{key}={val}")
+
+    env_path.write_text("\n".join(lines) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Routes – settings
+# ---------------------------------------------------------------------------
+
+@app.route("/api/settings", methods=["GET"])
+def api_get_settings():
+    return jsonify({
+        "syslog_enabled": SYSLOG_ENABLED,
+        "syslog_host":    SYSLOG_HOST,
+        "syslog_port":    SYSLOG_PORT,
+    })
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_save_settings():
+    global SYSLOG_ENABLED, SYSLOG_HOST, SYSLOG_PORT
+
+    data = request.get_json(silent=True) or {}
+
+    enabled = bool(data.get("syslog_enabled", False))
+    host    = str(data.get("syslog_host", "localhost")).strip()
+    port_raw = data.get("syslog_port", 514)
+    try:
+        port = int(port_raw)
+        if not (1 <= port <= 65535):
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({"error": "Port must be an integer between 1 and 65535"}), 400
+    if not host:
+        return jsonify({"error": "Host is required"}), 400
+
+    _update_env_file({
+        "SYSLOG_ENABLED": "true" if enabled else "false",
+        "SYSLOG_HOST":    host,
+        "SYSLOG_PORT":    str(port),
+    })
+
+    SYSLOG_ENABLED = enabled
+    SYSLOG_HOST    = host
+    SYSLOG_PORT    = port
+    syslog_sender.configure(SYSLOG_ENABLED, SYSLOG_HOST, SYSLOG_PORT)
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/settings/test", methods=["POST"])
+def api_test_syslog():
+    if not SYSLOG_ENABLED:
+        return jsonify({"error": "Syslog is not enabled"}), 400
+    syslog_sender.send("test message from Bark Extractor")
+    return jsonify({"ok": True, "message": f"Test message sent to {SYSLOG_HOST}:{SYSLOG_PORT} (UDP – no delivery confirmation)"})
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +303,8 @@ def api_start_download():
         organize_playlist=organize_playlist,
         audio_format=audio_format,
     )
+
+    syslog_sender.send(f"download_started id={job.download_id} url={url}")
 
     # Start SSE poller thread
     poller = threading.Thread(

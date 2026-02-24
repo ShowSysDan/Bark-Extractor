@@ -18,7 +18,13 @@
       <span class="brand-text">Bark Extractor</span>
       <small class="text-muted ms-2 d-none d-sm-inline">MP3 Downloader</small>
     </span>
-    <span class="badge bg-secondary" id="activeCount">0 active</span>
+    <div class="d-flex align-items-center gap-2">
+      <span class="badge bg-secondary" id="activeCount">0 active</span>
+      <button class="btn btn-sm btn-outline-secondary" id="settingsBtn" title="Settings"
+              data-bs-toggle="modal" data-bs-target="#settingsModal">
+        <i class="bi bi-gear"></i>
+      </button>
+    </div>
   </div>
 </nav>
 
@@ -159,6 +165,58 @@
   </div>
 
 </div><!-- /container -->
+
+<!-- ===== SETTINGS MODAL ===== -->
+<div class="modal fade" id="settingsModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-gear me-2"></i>Settings</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <h6 class="text-muted mb-3" style="font-size:.8rem;text-transform:uppercase;letter-spacing:.6px">
+          Syslog
+        </h6>
+
+        <div class="mb-3 form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="syslogEnabled" />
+          <label class="form-check-label" for="syslogEnabled">Enable syslog</label>
+        </div>
+
+        <div id="syslogFields">
+          <div class="row g-3">
+            <div class="col-8">
+              <label for="syslogHost" class="form-label">Server host / IP</label>
+              <input type="text" class="form-control" id="syslogHost"
+                     placeholder="192.168.1.10" autocomplete="off" />
+            </div>
+            <div class="col-4">
+              <label for="syslogPort" class="form-label">Port</label>
+              <input type="number" class="form-control" id="syslogPort"
+                     placeholder="514" min="1" max="65535" />
+            </div>
+          </div>
+          <div class="mt-2">
+            <small class="text-muted">
+              Events sent over UDP: download_started, download_completed, download_failed, download_cancelled.
+            </small>
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-secondary btn-sm" id="syslogTestBtn">
+          <i class="bi bi-send me-1"></i>Send test message
+        </button>
+        <button class="btn btn-primary" id="settingsSaveBtn">
+          <i class="bi bi-check2 me-1"></i>Save
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ===== LOG MODAL ===== -->
 <div class="modal fade" id="logModal" tabindex="-1">

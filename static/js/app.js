@@ -498,6 +498,80 @@ function filterFiles() {
 document.getElementById('fileSearch').addEventListener('input', filterFiles);
 
 // ----------------------------------------------------------------
+// Settings modal
+// ----------------------------------------------------------------
+
+const settingsModal = document.getElementById('settingsModal');
+
+settingsModal.addEventListener('show.bs.modal', async () => {
+  try {
+    const res = await fetch('/api/settings');
+    const cfg = await res.json();
+    document.getElementById('syslogEnabled').checked = !!cfg.syslog_enabled;
+    document.getElementById('syslogHost').value      = cfg.syslog_host || '';
+    document.getElementById('syslogPort').value      = cfg.syslog_port || 514;
+    toggleSyslogFields(!!cfg.syslog_enabled);
+  } catch {
+    toast('Could not load settings', 'danger');
+  }
+});
+
+function toggleSyslogFields(enabled) {
+  document.getElementById('syslogFields').style.opacity  = enabled ? '1' : '0.4';
+  document.getElementById('syslogFields').style.pointerEvents = enabled ? '' : 'none';
+  document.getElementById('syslogTestBtn').disabled = !enabled;
+}
+
+document.getElementById('syslogEnabled').addEventListener('change', function () {
+  toggleSyslogFields(this.checked);
+});
+
+document.getElementById('settingsSaveBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('settingsSaveBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        syslog_enabled: document.getElementById('syslogEnabled').checked,
+        syslog_host:    document.getElementById('syslogHost').value.trim(),
+        syslog_port:    parseInt(document.getElementById('syslogPort').value, 10),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      toast(data.error || 'Could not save settings', 'danger');
+    } else {
+      toast('Settings saved.', 'success');
+      bootstrap.Modal.getInstance(settingsModal).hide();
+    }
+  } catch {
+    toast('Network error', 'danger');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('syslogTestBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('syslogTestBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/settings/test', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      toast(data.error || 'Test failed', 'danger');
+    } else {
+      toast(data.message, 'info');
+    }
+  } catch {
+    toast('Network error', 'danger');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ----------------------------------------------------------------
 // Init
 // ----------------------------------------------------------------
 loadFileList();
