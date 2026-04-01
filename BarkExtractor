@@ -40,8 +40,8 @@ from bark_extractor import syslog_sender
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent
-DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", str(BASE_DIR / "downloads"))
-SESSIONS_DIR = os.getenv("SESSIONS_DIR", str(BASE_DIR / "sessions"))
+DOWNLOADS_DIR = str(Path(os.getenv("DOWNLOADS_DIR", str(BASE_DIR / "downloads"))).resolve())
+SESSIONS_DIR  = str(Path(os.getenv("SESSIONS_DIR",  str(BASE_DIR / "sessions"))).resolve())
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 YTDLP_PATH = os.getenv("YTDLP_PATH", "yt-dlp")
 PORT = int(os.getenv("PORT", 5100))
