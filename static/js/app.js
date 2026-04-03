@@ -377,27 +377,30 @@ async function loadFileList() {
 
 function renderFileRow(f) {
   const folder = f.folder && f.folder !== '.' ? `<span class="folder-badge">${escHtml(f.folder)}</span>` : '';
+  const ext    = f.name.split('.').pop().toUpperCase();
   return `
   <tr data-id="${f.id}">
     <td><input type="checkbox" class="form-check-input row-chk" value="${f.id}" /></td>
     <td>
       <div class="file-name" title="${escHtml(f.name)}">
-        <i class="bi bi-file-earmark-music text-muted me-1"></i>${escHtml(f.name)}
+        <span class="fmt-badge">${escHtml(ext)}</span>${escHtml(f.name)}
       </div>
     </td>
     <td class="d-none d-md-table-cell">${folder}</td>
-    <td class="d-none d-sm-table-cell text-end text-muted small">${escHtml(f.size_human)}</td>
-    <td class="d-none d-lg-table-cell text-muted small">${escHtml(f.modified_human)}</td>
-    <td class="text-end">
-      <button class="btn btn-sm btn-outline-success me-1" data-play="${f.id}" data-name="${escHtml(f.name)}" title="Play in browser">
-        <i class="bi bi-play-fill"></i>
-      </button>
-      <button class="btn btn-sm btn-outline-primary me-1" data-dl="${f.id}" data-name="${escHtml(f.name)}" title="Download to your computer">
-        <i class="bi bi-download"></i>
-      </button>
-      <button class="btn btn-sm btn-outline-danger" data-del="${f.id}" title="Delete from server">
-        <i class="bi bi-trash"></i>
-      </button>
+    <td class="d-none d-sm-table-cell text-end file-meta">${escHtml(f.size_human)}</td>
+    <td class="d-none d-lg-table-cell file-meta">${escHtml(f.modified_human)}</td>
+    <td class="text-end" style="white-space:nowrap">
+      <div class="d-inline-flex gap-1">
+        <button class="btn btn-sm file-btn-play" data-play="${f.id}" data-name="${escHtml(f.name)}" title="Play in browser">
+          <i class="bi bi-play-fill"></i>
+        </button>
+        <button class="btn btn-sm file-btn-dl" data-dl="${f.id}" data-name="${escHtml(f.name)}" title="Download to your computer">
+          <i class="bi bi-download"></i>
+        </button>
+        <button class="btn btn-sm file-btn-del" data-del="${f.id}" title="Delete from server">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
     </td>
   </tr>`;
 }
@@ -547,15 +550,16 @@ document.getElementById('settingsSaveBtn').addEventListener('click', async () =>
         syslog_port:    parseInt(document.getElementById('syslogPort').value, 10),
       }),
     });
-    const data = await res.json();
+    let data = {};
+    try { data = await res.json(); } catch { /* non-JSON body */ }
     if (!res.ok || data.error) {
-      toast(data.error || 'Could not save settings', 'danger');
+      toast(data.error || `Server error (${res.status})`, 'danger');
     } else {
       toast('Settings saved.', 'success');
       bootstrap.Modal.getInstance(settingsModal).hide();
     }
   } catch {
-    toast('Network error', 'danger');
+    toast('Could not reach server — check your connection.', 'danger');
   } finally {
     btn.disabled = false;
   }
@@ -566,14 +570,15 @@ document.getElementById('syslogTestBtn').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     const res = await fetch('/api/settings/test', { method: 'POST' });
-    const data = await res.json();
+    let data = {};
+    try { data = await res.json(); } catch { /* non-JSON body */ }
     if (!res.ok || data.error) {
-      toast(data.error || 'Test failed', 'danger');
+      toast(data.error || `Server error (${res.status})`, 'danger');
     } else {
       toast(data.message, 'info');
     }
   } catch {
-    toast('Network error', 'danger');
+    toast('Could not reach server — check your connection.', 'danger');
   } finally {
     btn.disabled = false;
   }

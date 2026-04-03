@@ -247,16 +247,33 @@
 <div id="playerBar" class="player-bar" style="display:none">
   <audio id="playerAudio" preload="metadata"></audio>
   <div class="container-xl px-4 d-flex align-items-center gap-3">
-    <button id="playerPlayBtn" class="btn btn-sm btn-light" title="Play / Pause">
+
+    <!-- Play / Pause -->
+    <button id="playerPlayBtn" class="player-play-btn" title="Play / Pause">
       <i class="bi bi-play-fill" id="playerPlayIcon"></i>
     </button>
-    <div class="player-title text-truncate" id="playerTitle" style="max-width:220px"></div>
-    <input type="range" id="playerSeek" class="form-range flex-grow-1" value="0" min="0" max="100" step="0.1" style="min-width:80px">
-    <span id="playerTime" class="text-muted small text-nowrap">0:00 / 0:00</span>
-    <input type="range" id="playerVolume" class="form-range" value="1" min="0" max="1" step="0.05" style="width:80px" title="Volume">
-    <button id="playerCloseBtn" class="btn btn-sm btn-outline-secondary" title="Close player">
+
+    <!-- Now playing info -->
+    <div class="player-info d-none d-sm-flex flex-column justify-content-center" style="min-width:0;max-width:200px">
+      <span class="player-label">NOW PLAYING</span>
+      <div class="player-title text-truncate" id="playerTitle"></div>
+    </div>
+
+    <!-- Seek -->
+    <input type="range" id="playerSeek" class="player-range flex-grow-1" value="0" min="0" max="100" step="0.1">
+
+    <!-- Time -->
+    <span id="playerTime" class="player-time text-nowrap">0:00 / 0:00</span>
+
+    <!-- Volume -->
+    <i class="bi bi-volume-up player-vol-icon d-none d-md-inline"></i>
+    <input type="range" id="playerVolume" class="player-range d-none d-md-block" value="1" min="0" max="1" step="0.05" style="width:70px" title="Volume">
+
+    <!-- Close -->
+    <button id="playerCloseBtn" class="player-close-btn" title="Close player">
       <i class="bi bi-x-lg"></i>
     </button>
+
   </div>
 </div>
 
