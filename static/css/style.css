@@ -260,12 +260,15 @@ thead.table-light,
 
 .file-name {
   font-size: .9rem;
-  font-weight: 500;
-  max-width: 380px;
+  font-weight: 600;
+  max-width: 440px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-primary);
+  color: var(--bark-cream);
+  display: flex;
+  align-items: center;
+  gap: .4rem;
 }
 
 .folder-badge {
@@ -275,6 +278,47 @@ thead.table-light,
   border-radius: .3rem;
   padding: .15em .45em;
 }
+
+.fmt-badge {
+  display: inline-block;
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .4px;
+  background: #2e2418;
+  color: var(--bark-amber);
+  border: 1px solid #4a3318;
+  border-radius: .25rem;
+  padding: .1em .38em;
+  flex-shrink: 0;
+}
+
+.file-meta {
+  font-size: .8rem;
+  color: var(--text-muted);
+}
+
+/* ---- Row action buttons ---- */
+.file-btn-play,
+.file-btn-dl,
+.file-btn-del {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: .4rem;
+  font-size: .85rem;
+  transition: background .15s, color .15s, border-color .15s;
+}
+
+.file-btn-play  { border: 1px solid var(--bark-green); color: var(--bark-green); background: transparent; }
+.file-btn-dl    { border: 1px solid var(--bark-blue);  color: var(--bark-blue);  background: transparent; }
+.file-btn-del   { border: 1px solid var(--bark-red);   color: var(--bark-red);   background: transparent; }
+
+.file-btn-play:hover  { background: var(--bark-green); color: #fff; }
+.file-btn-dl:hover    { background: var(--bark-blue);  color: #fff; }
+.file-btn-del:hover   { background: var(--bark-red);   color: #fff; }
 
 /* ---- Log modal ---- */
 .modal-content {
@@ -386,24 +430,96 @@ thead.table-light,
   bottom: 0;
   left: 0;
   right: 0;
-  background: var(--bg-card);
-  border-top: 1px solid var(--border-color);
-  padding: .55rem 0;
+  background: #140f0a;
+  border-top: 2px solid var(--bark-brown);
+  padding: .6rem 0;
   z-index: 1050;
-  box-shadow: 0 -2px 12px rgba(0,0,0,.35);
+  box-shadow: 0 -4px 20px rgba(0,0,0,.55);
+}
+
+body.player-open {
+  padding-bottom: 4rem;
+}
+
+/* Play/pause circle button */
+.player-play-btn {
+  width: 2.4rem;
+  height: 2.4rem;
+  flex-shrink: 0;
+  border: 2px solid var(--bark-amber);
+  background: transparent;
+  color: var(--bark-amber);
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  padding: 0;
+}
+.player-play-btn:hover {
+  background: var(--bark-amber);
+  color: #fff;
+}
+
+/* Now-playing label + title */
+.player-label {
+  font-size: .58rem;
+  letter-spacing: .8px;
+  color: var(--bark-amber);
+  font-weight: 700;
+  text-transform: uppercase;
+  line-height: 1;
+  margin-bottom: .15rem;
 }
 
 .player-title {
   font-size: .85rem;
-  color: var(--text-primary);
-  min-width: 0;
+  font-weight: 600;
+  color: var(--bark-cream);
+  line-height: 1.2;
 }
 
-body.player-open {
-  padding-bottom: 3.5rem;
-}
-
-/* Tint the seek/volume range thumbs to match the amber theme */
-#playerSeek, #playerVolume {
+/* Seek + volume range */
+.player-range {
   accent-color: var(--bark-amber);
+  cursor: pointer;
+}
+
+/* Time readout */
+.player-time {
+  font-size: .78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  min-width: 6.5rem;
+  text-align: center;
+}
+
+/* Volume icon */
+.player-vol-icon {
+  color: var(--text-muted);
+  font-size: .9rem;
+}
+
+/* Close button */
+.player-close-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  border-radius: .4rem;
+  width: 1.9rem;
+  height: 1.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .8rem;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: border-color .15s, color .15s;
+}
+.player-close-btn:hover {
+  border-color: var(--bark-red);
+  color: var(--bark-red);
 }

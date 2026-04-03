@@ -240,11 +240,15 @@ def api_save_settings():
     if not host:
         return jsonify({"error": "Host is required"}), 400
 
-    _update_env_file({
-        "SYSLOG_ENABLED": "true" if enabled else "false",
-        "SYSLOG_HOST":    host,
-        "SYSLOG_PORT":    str(port),
-    })
+    try:
+        _update_env_file({
+            "SYSLOG_ENABLED": "true" if enabled else "false",
+            "SYSLOG_HOST":    host,
+            "SYSLOG_PORT":    str(port),
+        })
+    except Exception as exc:
+        app.logger.warning("Could not write .env file: %s", exc)
+        # Non-fatal – settings are still applied in memory for this session
 
     SYSLOG_ENABLED = enabled
     SYSLOG_HOST    = host
