@@ -379,3 +379,31 @@ thead.table-light,
 @media (max-width: 576px) {
   .meta-info { flex-direction: column; gap: .2rem; }
 }
+
+/* ---- Web Player Bar ---- */
+.player-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border-color);
+  padding: .55rem 0;
+  z-index: 1050;
+  box-shadow: 0 -2px 12px rgba(0,0,0,.35);
+}
+
+.player-title {
+  font-size: .85rem;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+body.player-open {
+  padding-bottom: 3.5rem;
+}
+
+/* Tint the seek/volume range thumbs to match the amber theme */
+#playerSeek, #playerVolume {
+  accent-color: var(--bark-amber);
+}

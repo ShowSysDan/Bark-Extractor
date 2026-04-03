@@ -356,6 +356,11 @@ async function loadFileList() {
     chk.addEventListener('change', updateSelectionToolbar);
   });
 
+  // Wire per-file play buttons
+  tbody.querySelectorAll('[data-play]').forEach(btn => {
+    btn.addEventListener('click', () => playFile(btn.dataset.play, btn.dataset.name));
+  });
+
   // Wire per-file download buttons
   tbody.querySelectorAll('[data-dl]').forEach(btn => {
     btn.addEventListener('click', () => downloadFile(btn.dataset.dl, btn.dataset.name));
@@ -384,6 +389,9 @@ function renderFileRow(f) {
     <td class="d-none d-sm-table-cell text-end text-muted small">${escHtml(f.size_human)}</td>
     <td class="d-none d-lg-table-cell text-muted small">${escHtml(f.modified_human)}</td>
     <td class="text-end">
+      <button class="btn btn-sm btn-outline-success me-1" data-play="${f.id}" data-name="${escHtml(f.name)}" title="Play in browser">
+        <i class="bi bi-play-fill"></i>
+      </button>
       <button class="btn btn-sm btn-outline-primary me-1" data-dl="${f.id}" data-name="${escHtml(f.name)}" title="Download to your computer">
         <i class="bi bi-download"></i>
       </button>
@@ -569,6 +577,72 @@ document.getElementById('syslogTestBtn').addEventListener('click', async () => {
   } finally {
     btn.disabled = false;
   }
+});
+
+// ----------------------------------------------------------------
+// Web Player
+// ----------------------------------------------------------------
+
+const playerAudio    = document.getElementById('playerAudio');
+const playerBar      = document.getElementById('playerBar');
+const playerTitle    = document.getElementById('playerTitle');
+const playerPlayBtn  = document.getElementById('playerPlayBtn');
+const playerPlayIcon = document.getElementById('playerPlayIcon');
+const playerSeek     = document.getElementById('playerSeek');
+const playerTime     = document.getElementById('playerTime');
+const playerVolume   = document.getElementById('playerVolume');
+const playerCloseBtn = document.getElementById('playerCloseBtn');
+
+function fmtTime(s) {
+  if (!isFinite(s)) return '0:00';
+  const m   = Math.floor(s / 60);
+  const sec = Math.floor(s % 60).toString().padStart(2, '0');
+  return `${m}:${sec}`;
+}
+
+function playFile(fileId, fileName) {
+  playerAudio.src          = `/api/files/${fileId}/stream`;
+  playerTitle.textContent  = fileName;
+  playerBar.style.display  = '';
+  playerSeek.value         = 0;
+  document.body.classList.add('player-open');
+  playerAudio.play().catch(() => {});
+}
+
+playerAudio.addEventListener('play',  () => { playerPlayIcon.className = 'bi bi-pause-fill'; });
+playerAudio.addEventListener('pause', () => { playerPlayIcon.className = 'bi bi-play-fill';  });
+playerAudio.addEventListener('ended', () => { playerPlayIcon.className = 'bi bi-play-fill';  });
+
+playerAudio.addEventListener('timeupdate', () => {
+  if (playerAudio.duration) {
+    playerSeek.value        = (playerAudio.currentTime / playerAudio.duration) * 100;
+    playerTime.textContent  = `${fmtTime(playerAudio.currentTime)} / ${fmtTime(playerAudio.duration)}`;
+  }
+});
+
+playerAudio.addEventListener('loadedmetadata', () => {
+  playerTime.textContent = `0:00 / ${fmtTime(playerAudio.duration)}`;
+});
+
+playerPlayBtn.addEventListener('click', () => {
+  playerAudio.paused ? playerAudio.play() : playerAudio.pause();
+});
+
+playerSeek.addEventListener('input', () => {
+  if (playerAudio.duration) {
+    playerAudio.currentTime = (playerSeek.value / 100) * playerAudio.duration;
+  }
+});
+
+playerVolume.addEventListener('input', () => {
+  playerAudio.volume = playerVolume.value;
+});
+
+playerCloseBtn.addEventListener('click', () => {
+  playerAudio.pause();
+  playerAudio.src         = '';
+  playerBar.style.display = 'none';
+  document.body.classList.remove('player-open');
 });
 
 // ----------------------------------------------------------------

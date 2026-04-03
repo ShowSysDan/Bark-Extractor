@@ -422,6 +422,19 @@ def api_download_file(file_id):
     return send_file(path, as_attachment=True, mimetype=mime)
 
 
+@app.route("/api/files/<file_id>/stream")
+def api_stream_file(file_id):
+    """Serve audio inline for in-browser playback with range-request support for seeking."""
+    path = file_manager.get_file_path(file_id)
+    if not path:
+        abort(404)
+    if not os.path.realpath(path).startswith(os.path.realpath(DOWNLOADS_DIR)):
+        abort(403)
+    ext = os.path.splitext(path)[1].lower()
+    mime = _AUDIO_MIME.get(ext, "audio/mpeg")
+    return send_file(path, mimetype=mime, conditional=True)
+
+
 @app.route("/api/files/<file_id>", methods=["DELETE"])
 def api_delete_file(file_id):
     if file_manager.delete_file(file_id):
