@@ -84,6 +84,7 @@ download_manager = DownloadManager(
 file_manager = FileManager(downloads_dir=DOWNLOADS_DIR)
 
 syslog_sender.configure(SYSLOG_ENABLED, SYSLOG_HOST, SYSLOG_PORT)
+syslog_sender.send("service_started")
 
 # Per-download SSE queues: download_id -> list of queue.Queue
 _sse_subscribers: dict[str, list[queue.Queue]] = {}
@@ -255,6 +256,11 @@ def api_save_settings():
     SYSLOG_PORT    = port
     syslog_sender.configure(SYSLOG_ENABLED, SYSLOG_HOST, SYSLOG_PORT)
 
+    syslog_sender.send(
+        f"settings_saved syslog_enabled={enabled} "
+        f"syslog_host={host} syslog_port={port}"
+    )
+
     return jsonify({"ok": True})
 
 
@@ -262,7 +268,7 @@ def api_save_settings():
 def api_test_syslog():
     if not SYSLOG_ENABLED:
         return jsonify({"error": "Syslog is not enabled"}), 400
-    syslog_sender.send("test message from Bark Extractor")
+    syslog_sender.send("syslog_test message from Bark Extractor")
     return jsonify({"ok": True, "message": f"Test message sent to {SYSLOG_HOST}:{SYSLOG_PORT} (UDP – no delivery confirmation)"})
 
 
@@ -322,6 +328,7 @@ def api_start_download():
 @app.route("/api/download/<download_id>/stop", methods=["POST"])
 def api_stop_download(download_id):
     if download_manager.cancel_job(download_id):
+        syslog_sender.send(f"download_stop_requested id={download_id}")
         return jsonify({"ok": True, "message": "Cancellation requested"})
     return jsonify({"ok": False, "message": "Job not found or already finished"}), 404
 
@@ -421,6 +428,7 @@ def api_download_file(file_id):
     # Ensure the path is within downloads_dir (path traversal guard)
     if not os.path.realpath(path).startswith(os.path.realpath(DOWNLOADS_DIR)):
         abort(403)
+    syslog_sender.send(f"file_downloaded file={os.path.basename(path)}")
     ext = os.path.splitext(path)[1].lower()
     mime = _AUDIO_MIME.get(ext, "audio/mpeg")
     return send_file(path, as_attachment=True, mimetype=mime)
@@ -441,7 +449,11 @@ def api_stream_file(file_id):
 
 @app.route("/api/files/<file_id>", methods=["DELETE"])
 def api_delete_file(file_id):
+    # Resolve name before deletion for the syslog message
+    path = file_manager.get_file_path(file_id)
+    fname = os.path.basename(path) if path else file_id
     if file_manager.delete_file(file_id):
+        syslog_sender.send(f"file_deleted file={fname}")
         return jsonify({"ok": True})
     return jsonify({"ok": False, "error": "File not found"}), 404
 
