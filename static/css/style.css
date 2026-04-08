@@ -523,3 +523,22 @@ body.player-open {
   border-color: var(--bark-red);
   color: var(--bark-red);
 }
+
+/* ---- Dropdown menus (dark theme) ---- */
+.dropdown-menu {
+  background-color: var(--bg-card);
+  border-color: var(--border-color);
+}
+.dropdown-item {
+  color: var(--text-primary);
+  font-size: .85rem;
+}
+.dropdown-item:hover,
+.dropdown-item:focus {
+  background-color: var(--bg-input);
+  color: var(--bark-cream);
+}
+.file-btn-dl.dropdown-toggle-split {
+  border-left-color: rgba(68, 147, 248, 0.35);
+  padding: 0 .35rem;
+}
