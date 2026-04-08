@@ -366,6 +366,11 @@ async function loadFileList() {
     btn.addEventListener('click', () => downloadFile(btn.dataset.dl, btn.dataset.name));
   });
 
+  // Wire per-file normalized-download dropdown items
+  tbody.querySelectorAll('[data-dl-norm]').forEach(btn => {
+    btn.addEventListener('click', () => downloadFile(btn.dataset.dlNorm, btn.dataset.name, true));
+  });
+
   // Wire per-file delete buttons
   tbody.querySelectorAll('[data-del]').forEach(btn => {
     btn.addEventListener('click', () => deleteFile(btn.dataset.del, btn.closest('tr')));
@@ -394,9 +399,22 @@ function renderFileRow(f) {
         <button class="btn btn-sm file-btn-play" data-play="${f.id}" data-name="${escHtml(f.name)}" title="Play in browser">
           <i class="bi bi-play-fill"></i>
         </button>
-        <button class="btn btn-sm file-btn-dl" data-dl="${f.id}" data-name="${escHtml(f.name)}" title="Download to your computer">
-          <i class="bi bi-download"></i>
-        </button>
+        <div class="btn-group" role="group">
+          <button class="btn btn-sm file-btn-dl" data-dl="${f.id}" data-name="${escHtml(f.name)}" title="Download original">
+            <i class="bi bi-download"></i>
+          </button>
+          <button type="button" class="btn btn-sm file-btn-dl dropdown-toggle dropdown-toggle-split"
+                  data-bs-toggle="dropdown" aria-expanded="false" title="Download options">
+            <span class="visually-hidden">Download options</span>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li>
+              <button class="dropdown-item" data-dl-norm="${f.id}" data-name="${escHtml(f.name)}">
+                <i class="bi bi-soundwave me-2"></i>Normalized (-5dB peak)
+              </button>
+            </li>
+          </ul>
+        </div>
         <button class="btn btn-sm file-btn-del" data-del="${f.id}" title="Delete from server">
           <i class="bi bi-trash"></i>
         </button>
@@ -406,25 +424,34 @@ function renderFileRow(f) {
 }
 
 function updateSelectionToolbar() {
-  const checked = $$('.row-chk:checked');
-  const delBtn  = document.getElementById('deleteSelectedBtn');
-  const dlBtn   = document.getElementById('downloadSelectedBtn');
+  const checked  = $$('.row-chk:checked');
+  const delBtn   = document.getElementById('deleteSelectedBtn');
+  const dlGroup  = document.getElementById('downloadSelectedGroup');
+  const dlBtn    = document.getElementById('downloadSelectedBtn');
 
   if (checked.length > 0) {
-    delBtn.style.display = '';
-    dlBtn.style.display  = '';
-    dlBtn.textContent    = `Download Selected (${checked.length})`;
+    delBtn.style.display  = '';
+    dlGroup.style.display = '';
+    dlBtn.innerHTML = `<i class="bi bi-download"></i> Download Selected (${checked.length})`;
   } else {
-    delBtn.style.display = 'none';
-    dlBtn.style.display  = 'none';
+    delBtn.style.display  = 'none';
+    dlGroup.style.display = 'none';
   }
 }
 
-function downloadFile(fileId, fileName) {
+function downloadFile(fileId, fileName, normalize = false) {
   // Trigger a browser download via a temporary <a>
+  const url = normalize
+    ? `/api/files/${fileId}/download?normalize=1`
+    : `/api/files/${fileId}/download`;
+  let dlName = fileName || 'audio';
+  if (normalize) {
+    const dot = dlName.lastIndexOf('.');
+    dlName = dot !== -1 ? dlName.slice(0, dot) + '_normalized' + dlName.slice(dot) : dlName + '_normalized';
+  }
   const a = document.createElement('a');
-  a.href = `/api/files/${fileId}/download`;
-  a.download = fileName || 'audio.mp3';
+  a.href = url;
+  a.download = dlName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -468,17 +495,24 @@ document.getElementById('selectAllBtn').addEventListener('click', () => {
   updateSelectionToolbar();
 });
 
-// Batch download selected
+// Batch download selected – original
 document.getElementById('downloadSelectedBtn').addEventListener('click', () => {
   const checked = $$('.row-chk:checked');
-  checked.forEach(chk => {
+  checked.forEach((chk, i) => {
     const f = allFiles.find(x => x.id === chk.value);
-    if (f) {
-      // Stagger downloads slightly so browser doesn't block them
-      setTimeout(() => downloadFile(f.id, f.name), 100 * checked.indexOf(chk));
-    }
+    if (f) setTimeout(() => downloadFile(f.id, f.name, false), 100 * i);
   });
   toast(`Downloading ${checked.length} file(s)…`, 'info');
+});
+
+// Batch download selected – normalized
+document.getElementById('downloadSelectedNormBtn').addEventListener('click', () => {
+  const checked = $$('.row-chk:checked');
+  checked.forEach((chk, i) => {
+    const f = allFiles.find(x => x.id === chk.value);
+    if (f) setTimeout(() => downloadFile(f.id, f.name, true), 150 * i);
+  });
+  toast(`Downloading ${checked.length} normalized file(s)…`, 'info');
 });
 
 // Batch delete selected

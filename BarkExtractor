@@ -9,6 +9,7 @@ import json
 import time
 import uuid
 import queue
+import subprocess
 import threading
 from pathlib import Path
 from datetime import timedelta
@@ -17,6 +18,7 @@ from flask import (
     Flask,
     Response,
     abort,
+    after_this_request,
     jsonify,
     render_template,
     request,
@@ -419,18 +421,58 @@ def api_get_file(file_id):
     return jsonify(info)
 
 
+def _get_or_create_normalized(input_path: str) -> str:
+    """
+    Peak-normalize to -5 dBTP via ffmpeg loudnorm (linear, single-pass).
+    Saves result next to the original as <base>_normalized<ext>.
+    Returns path to normalized file; raises RuntimeError on failure.
+    """
+    base, ext = os.path.splitext(input_path)
+    norm_path = f"{base}_normalized{ext}"
+    if os.path.isfile(norm_path):
+        return norm_path  # already processed — serve cached copy
+    cmd = [
+        FFMPEG_PATH, "-y", "-i", input_path,
+        "-vn", "-af", "loudnorm=linear=true:tp=-5",
+        norm_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=300)
+    if result.returncode != 0:
+        try:
+            os.unlink(norm_path)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"ffmpeg rc={result.returncode}: "
+            + result.stderr.decode(errors="replace")[-400:]
+        )
+    return norm_path
+
+
 @app.route("/api/files/<file_id>/download")
 def api_download_file(file_id):
-    """Serve an MP3 to the user's browser as an attachment."""
+    """Serve an audio file to the user's browser as an attachment."""
     path = file_manager.get_file_path(file_id)
     if not path:
         abort(404)
     # Ensure the path is within downloads_dir (path traversal guard)
     if not os.path.realpath(path).startswith(os.path.realpath(DOWNLOADS_DIR)):
         abort(403)
-    syslog_sender.send(f"file_downloaded file={os.path.basename(path)}")
     ext = os.path.splitext(path)[1].lower()
     mime = _AUDIO_MIME.get(ext, "audio/mpeg")
+
+    if request.args.get("normalize") == "1":
+        try:
+            norm_path = _get_or_create_normalized(path)
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            app.logger.error("Normalization failed: %s", e)
+            abort(500, description="Audio normalization failed.")
+        syslog_sender.send(f"file_downloaded file={os.path.basename(norm_path)} normalized=true")
+        norm_ext = os.path.splitext(norm_path)[1].lower()
+        norm_mime = _AUDIO_MIME.get(norm_ext, "audio/mpeg")
+        return send_file(norm_path, as_attachment=True, mimetype=norm_mime)
+
+    syslog_sender.send(f"file_downloaded file={os.path.basename(path)}")
     return send_file(path, as_attachment=True, mimetype=mime)
 
 
