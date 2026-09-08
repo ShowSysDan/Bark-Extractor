@@ -20,3 +20,7 @@ sessions/
 # Partial download temp files
 *.part
 *.ytdl
+
+# Managed external tools – downloaded on startup / by setup.sh, never tracked
+/yt-dlp
+/bin/

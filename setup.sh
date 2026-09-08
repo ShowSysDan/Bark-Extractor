@@ -88,25 +88,18 @@ pip install --upgrade pip -q
 pip install -r requirements.txt
 info "Dependencies installed"
 
-# Also ensure yt-dlp is up to date in the venv
-pip install --upgrade yt-dlp -q
-info "yt-dlp updated to latest version"
-
 # ---------------------------------------------------
-# 4b. Bundled yt-dlp binary
+# 4b. External tools – yt-dlp + Deno JS runtime
 # ---------------------------------------------------
-section "Checking bundled yt-dlp binary"
+section "Installing external tools (yt-dlp + Deno)"
 
-if [ -f "./yt-dlp" ]; then
-  chmod +x ./yt-dlp
-  info "Bundled yt-dlp marked executable: $(./yt-dlp --version 2>/dev/null || echo '(version check failed)')"
+# yt-dlp and Deno are not tracked in git. The app downloads them on startup
+# when missing and self-updates yt-dlp overnight; running the bootstrap here
+# just primes them so the first start is fast.
+if python -m bark_extractor.tool_manager; then
+  info "yt-dlp and Deno ready"
 else
-  warn "Bundled yt-dlp not found. Downloading from GitHub..."
-  curl -L --retry 3 --retry-delay 2 \
-    -o ./yt-dlp \
-    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
-  chmod +x ./yt-dlp
-  info "yt-dlp downloaded: $(./yt-dlp --version 2>/dev/null || echo '(version check failed)')"
+  warn "Tool bootstrap failed – the app will retry on startup"
 fi
 
 # ---------------------------------------------------
