@@ -1,4 +1,7 @@
 Flask>=3.0.0
 Flask-Session>=0.8.0
-yt-dlp>=2024.11.18
+# Fallback only – the app normally runs the standalone binary at YTDLP_PATH.
+# [default] pulls in yt-dlp's recommended extras, including the external-JS
+# component YouTube now requires.
+yt-dlp[default]>=2026.2.21
 python-dotenv>=1.0.0

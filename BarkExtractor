@@ -33,7 +33,9 @@ from dotenv import load_dotenv
 
 from bark_extractor.downloader import DownloadManager, JobStatus
 from bark_extractor.file_manager import FileManager
-from bark_extractor import syslog_sender
+from bark_extractor import syslog_sender, tool_manager
+
+APP_VERSION = "1.1.0"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -281,7 +283,16 @@ def api_test_syslog():
 @app.route("/")
 def index():
     get_session_id()  # ensure session is initialised
-    return render_template("index.html")
+    return render_template("index.html", app_version=APP_VERSION)
+
+
+@app.route("/api/version")
+def api_version():
+    return jsonify({
+        "app": APP_VERSION,
+        "ytdlp": tool_manager.ytdlp_version(),
+        "deno": tool_manager.deno_version(),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -374,9 +385,14 @@ def api_download_stream(download_id):
                     break
         finally:
             with _sse_lock:
-                subs = _sse_subscribers.get(download_id, [])
-                if q in subs:
-                    subs.remove(q)
+                subs = _sse_subscribers.get(download_id)
+                if subs is not None:
+                    if q in subs:
+                        subs.remove(q)
+                    if not subs:
+                        # Last subscriber gone – drop the registry entry so
+                        # abandoned download ids don't accumulate forever.
+                        _sse_subscribers.pop(download_id, None)
 
     return Response(
         generate(),
@@ -501,12 +517,53 @@ def api_delete_file(file_id):
 
 
 # ---------------------------------------------------------------------------
+# Background maintenance
+# ---------------------------------------------------------------------------
+
+def _job_janitor():
+    """Periodically drop finished jobs from memory (they are kept for an hour
+    so late page loads can still read their status, then released)."""
+    while True:
+        time.sleep(900)
+        try:
+            download_manager.cleanup_finished_jobs(max_age_seconds=3600)
+        except Exception as exc:
+            app.logger.warning("Job janitor error: %s", exc)
+
+
+def _tools_log(msg: str):
+    print(f"  [tools] {msg}", flush=True)
+    syslog_sender.send(f"tools {msg}")
+
+
+def _startup():
+    """Check and prepare all runtime dependencies. Called on every start, so
+    a plain `git pull && systemctl restart bark-extractor` picks everything up."""
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+    # FFmpeg presence check (warn only – the UI still serves the library)
+    import shutil as _shutil
+    if not (_shutil.which(FFMPEG_PATH) or os.path.isfile(FFMPEG_PATH)):
+        print(f"  [tools] WARNING: ffmpeg not found at {FFMPEG_PATH!r} – "
+              "audio extraction will fail until it is installed", flush=True)
+
+    # yt-dlp + Deno: download when missing, keep yt-dlp updated overnight
+    tool_manager.bootstrap(YTDLP_PATH, start_updater=True, log=_tools_log)
+
+    threading.Thread(target=_job_janitor, daemon=True, name="job-janitor").start()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
-    print(f"  Bark Extractor starting on http://0.0.0.0:{PORT}")
+    debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    # Under the Flask debug reloader the script runs twice; only start the
+    # background threads in the serving process.
+    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        _startup()
+    print(f"  Bark Extractor v{APP_VERSION} starting on http://0.0.0.0:{PORT}")
     print(f"  Downloads directory: {DOWNLOADS_DIR}")
-    app.run(host="0.0.0.0", port=PORT, debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")
+    app.run(host="0.0.0.0", port=PORT, debug=debug)

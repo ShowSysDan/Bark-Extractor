@@ -248,6 +248,16 @@ class DownloadManager:
         finally:
             job.finished_at = datetime.now()
             job.progress = 100.0 if job.status == JobStatus.COMPLETED else job.progress
+            # Release the subprocess handle (and its stdout pipe) so finished
+            # jobs don't pin OS resources while they linger for status reads.
+            with job._lock:
+                if job._process is not None:
+                    try:
+                        if job._process.stdout:
+                            job._process.stdout.close()
+                    except OSError:
+                        pass
+                    job._process = None
 
     def _build_command(self, job: DownloadJob) -> list[str]:
         quality = job.quality.split()[0] if job.quality else "0"
