@@ -23,5 +23,4 @@ sessions/
 
 # Managed external tools – downloaded on startup / by setup.sh, never tracked
 /yt-dlp
-/yt-dlp.exe
 /bin/

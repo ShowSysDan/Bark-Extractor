@@ -48,9 +48,6 @@ _CHANNEL_REPOS = {
     "master": "yt-dlp/yt-dlp-master-builds",
 }
 
-_IS_WINDOWS = sys.platform == "win32"
-_YTDLP_ASSET = "yt-dlp.exe" if _IS_WINDOWS else "yt-dlp"
-
 _DOWNLOAD_TIMEOUT = 300      # seconds for a whole tool download
 _VERSION_TIMEOUT = 30        # seconds for a --version probe
 _UPDATE_TIMEOUT = 300        # seconds for a self-update run
@@ -126,7 +123,7 @@ def _is_managed(ytdlp_path: str) -> bool:
 
 def _channel_url(channel: str) -> str:
     repo = _CHANNEL_REPOS.get(channel, _CHANNEL_REPOS["nightly"])
-    return f"https://github.com/{repo}/releases/latest/download/{_YTDLP_ASSET}"
+    return f"https://github.com/{repo}/releases/latest/download/yt-dlp"
 
 
 # ---------------------------------------------------------------------------
@@ -142,11 +139,10 @@ def ensure_ytdlp(ytdlp_path: str, channel: str = "nightly", log=_default_log) ->
     target = _resolve_ytdlp(ytdlp_path)
 
     if target and target.is_file():
-        if not _IS_WINDOWS:
-            try:
-                _make_executable(target)
-            except OSError:
-                pass
+        try:
+            _make_executable(target)
+        except OSError:
+            pass
         version = _probe_version([str(target), "--version"])
         if version:
             _versions["ytdlp"] = version
@@ -161,8 +157,7 @@ def ensure_ytdlp(ytdlp_path: str, channel: str = "nightly", log=_default_log) ->
 
     target = (BASE_DIR / ytdlp_path).resolve() if not Path(ytdlp_path).is_absolute() else Path(ytdlp_path)
     _download(_channel_url(channel), target, log)
-    if not _IS_WINDOWS:
-        _make_executable(target)
+    _make_executable(target)
     version = _probe_version([str(target), "--version"])
     _versions["ytdlp"] = version
     _write_stamp()
@@ -213,8 +208,7 @@ def ensure_ytdlp_fresh(ytdlp_path: str, channel: str, log=_default_log) -> str |
     target = Path(ytdlp_path)
     target = target if target.is_absolute() else (BASE_DIR / target).resolve()
     _download(_channel_url(channel), target, log)
-    if not _IS_WINDOWS:
-        _make_executable(target)
+    _make_executable(target)
     version = _probe_version([str(target), "--version"])
     _versions["ytdlp"] = version
     _write_stamp()
@@ -240,8 +234,6 @@ def _deno_target_triple() -> str | None:
         return f"{arch}-unknown-linux-gnu"
     if sys.platform == "darwin":
         return f"{arch}-apple-darwin"
-    if _IS_WINDOWS:
-        return f"{arch}-pc-windows-msvc"
     return None
 
 
@@ -251,7 +243,7 @@ def ensure_deno(log=_default_log) -> str | None:
     system-wide install; otherwise downloads the static binary into ./bin/
     and prepends ./bin to PATH. Returns the version string, or None.
     """
-    deno_name = "deno.exe" if _IS_WINDOWS else "deno"
+    deno_name = "deno"
     local = BIN_DIR / deno_name
 
     system = shutil.which("deno")
@@ -283,8 +275,7 @@ def ensure_deno(log=_default_log) -> str | None:
         _download(url, zip_path, log)
         with zipfile.ZipFile(zip_path) as zf:
             zf.extract(deno_name, path=str(BIN_DIR))
-        if not _IS_WINDOWS:
-            _make_executable(local)
+        _make_executable(local)
     finally:
         try:
             zip_path.unlink()

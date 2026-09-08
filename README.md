@@ -193,6 +193,8 @@ Bark-Extractor/
   available for yt-dlp to solve YouTube's player challenges
 - yt-dlp and Deno are no longer tracked in git; both are downloaded
   automatically on startup when missing (`setup.sh` also primes them)
+- Removed the bundled Windows binary (`yt-dlp.exe`) and Windows-specific
+  code — the app targets Linux (and macOS for development)
 - yt-dlp now self-updates overnight (default: every 3 days around 3 a.m.,
   nightly channel) — configurable via `YTDLP_AUTO_UPDATE`,
   `YTDLP_UPDATE_INTERVAL_DAYS`, `YTDLP_UPDATE_HOUR`, `YTDLP_UPDATE_CHANNEL`
