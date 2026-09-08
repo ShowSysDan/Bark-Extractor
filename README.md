@@ -149,8 +149,11 @@ All settings live in `.env` (created from `.env.example` by `setup.sh`):
 | `FLASK_DEBUG` | `false` | Enable Flask debug mode |
 
 New variables are optional — an existing `.env` without them keeps working
-with the defaults above. Syslog settings saved from the web UI are stored in
-`.env` and are preserved across updates.
+with the defaults above. On startup the app appends any missing auto-update
+keys to `.env` with their default values so they're easy to find and edit on
+the server; existing keys, values, and comments are never modified. Syslog
+settings saved from the web UI are stored in `.env` and are preserved across
+updates.
 
 ## Project Structure
 
@@ -205,6 +208,8 @@ Bark-Extractor/
   release their subprocess handles immediately, and abandoned SSE stream
   registrations are cleaned up
 - Added `/api/version` endpoint and version display in the UI footer
+- Missing auto-update settings are appended to `.env` on startup (defaults
+  only; existing entries are never touched)
 
 ### 1.0.0
 - Initial release: MP3 extraction with live progress, shared library,
