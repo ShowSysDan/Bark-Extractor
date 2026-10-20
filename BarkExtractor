@@ -9,10 +9,12 @@ import json
 import time
 import uuid
 import queue
-import subprocess
+import shutil
+import zipfile
 import threading
+from collections import deque
 from pathlib import Path
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from flask import (
     Flask,
@@ -33,9 +35,9 @@ from dotenv import load_dotenv
 
 from bark_extractor.downloader import DownloadManager, JobStatus
 from bark_extractor.file_manager import FileManager
-from bark_extractor import syslog_sender, tool_manager
+from bark_extractor import audio_ops, syslog_sender, tool_manager
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -63,6 +65,7 @@ _AUDIO_MIME = {
     ".flac": "audio/flac",
     ".ogg":  "audio/ogg",
     ".wav":  "audio/wav",
+    ".aiff": "audio/aiff",
 }
 
 # ---------------------------------------------------------------------------
@@ -89,6 +92,18 @@ file_manager = FileManager(downloads_dir=DOWNLOADS_DIR)
 
 syslog_sender.configure(SYSLOG_ENABLED, SYSLOG_HOST, SYSLOG_PORT)
 syslog_sender.send("service_started")
+
+# Recent notable events (tool updates, failed jobs) for the admin panel
+_events: deque = deque(maxlen=200)
+
+
+def _record_event(level: str, message: str):
+    _events.append({
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "level": level,
+        "message": message,
+    })
+
 
 # Per-download SSE queues: download_id -> list of queue.Queue
 _sse_subscribers: dict[str, list[queue.Queue]] = {}
@@ -121,6 +136,25 @@ def _push_sse(download_id: str, data: dict):
                 pass
 
 
+def _job_payload(job) -> dict:
+    """Job state for the API, plus the library id of a normalize job's output."""
+    data = job.to_dict()
+    if job.result_file:
+        data["result_file_id"] = FileManager.file_id(job.result_file)
+        data["result_name"] = os.path.basename(job.result_file)
+    return data
+
+
+def _done_event(job) -> dict:
+    data = _job_payload(job)
+    data["type"] = "done"
+    return data
+
+
+def _start_poller(download_id: str):
+    threading.Thread(target=_sse_poller, args=(download_id,), daemon=True).start()
+
+
 def _sse_poller(download_id: str):
     """
     Background thread that polls the job and emits SSE events until it finishes.
@@ -143,38 +177,38 @@ def _sse_poller(download_id: str):
         _push_sse(download_id, {
             "type": "progress",
             "download_id": download_id,
+            "kind": job.kind,
+            "title": job.title,
             "status": job.status,
             "progress": job.progress,
             "speed": job.speed,
             "eta": job.eta,
             "current_file": job.current_file,
+            "stage": job.stage,
         })
 
-        if job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+        if job.is_finished:
             # Syslog lifecycle event
+            target = f"url={job.url}" if job.kind == "download" else f"file={job.title}"
             if job.status == JobStatus.COMPLETED:
                 syslog_sender.send(
-                    f"download_completed id={download_id} "
-                    f"files={len(job.files_downloaded)} url={job.url}"
+                    f"{job.kind}_completed id={download_id} "
+                    f"files={len(job.files_downloaded)} {target}"
                 )
             elif job.status == JobStatus.FAILED:
+                what = job.url if job.kind == "download" else f"{job.label}: {job.title}"
+                _record_event("error", f"{job.kind} failed – {what} – {job.error}")
                 syslog_sender.send(
-                    f"download_failed id={download_id} "
-                    f"error={job.error!r} url={job.url}"
+                    f"{job.kind}_failed id={download_id} "
+                    f"error={job.error!r} {target}"
                 )
             elif job.status == JobStatus.CANCELLED:
                 syslog_sender.send(
-                    f"download_cancelled id={download_id} url={job.url}"
+                    f"{job.kind}_cancelled id={download_id} {target}"
                 )
 
             # Final event
-            _push_sse(download_id, {
-                "type": "done",
-                "download_id": download_id,
-                "status": job.status,
-                "files_downloaded": job.files_downloaded,
-                "error": job.error,
-            })
+            _push_sse(download_id, _done_event(job))
             break
 
         time.sleep(0.5)
@@ -328,12 +362,7 @@ def api_start_download():
     )
 
     syslog_sender.send(f"download_started id={job.download_id} url={url}")
-
-    # Start SSE poller thread
-    poller = threading.Thread(
-        target=_sse_poller, args=(job.download_id,), daemon=True
-    )
-    poller.start()
+    _start_poller(job.download_id)
 
     return jsonify({"download_id": job.download_id, "status": job.status})
 
@@ -341,7 +370,9 @@ def api_start_download():
 @app.route("/api/download/<download_id>/stop", methods=["POST"])
 def api_stop_download(download_id):
     if download_manager.cancel_job(download_id):
-        syslog_sender.send(f"download_stop_requested id={download_id}")
+        job = download_manager.get_job(download_id)
+        kind = job.kind if job else "download"
+        syslog_sender.send(f"{kind}_stop_requested id={download_id}")
         return jsonify({"ok": True, "message": "Cancellation requested"})
     return jsonify({"ok": False, "message": "Job not found or already finished"}), 404
 
@@ -351,7 +382,7 @@ def api_download_status(download_id):
     job = download_manager.get_job(download_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
-    return jsonify(job.to_dict())
+    return jsonify(_job_payload(job))
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +404,18 @@ def api_download_stream(download_id):
         try:
             # Send a heartbeat immediately so the browser connection opens
             yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+            # A job that failed fast (or a page reload after it finished)
+            # can complete before this stream subscribes; its final event
+            # was broadcast to nobody, so report the outcome directly.
+            job = download_manager.get_job(download_id)
+            if job is None:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Job not found'})}\n\n"
+                yield f"data: {json.dumps({'type': 'close'})}\n\n"
+                return
+            if job.is_finished:
+                yield f"data: {json.dumps(_done_event(job))}\n\n"
+                yield f"data: {json.dumps({'type': 'close'})}\n\n"
+                return
             while True:
                 try:
                     msg = q.get(timeout=30)
@@ -437,72 +480,223 @@ def api_get_file(file_id):
     return jsonify(info)
 
 
-def _get_or_create_normalized(input_path: str) -> str:
+def _resolve_file_or_abort(file_id: str) -> str:
+    """Map a library file id to its absolute path, or abort with 404/403."""
+    path = file_manager.get_file_path(file_id)
+    if not path:
+        abort(404)
+    # Path traversal guard: the file must live inside downloads_dir
+    real, root = os.path.realpath(path), os.path.realpath(DOWNLOADS_DIR)
+    if os.path.commonpath([real, root]) != root:
+        abort(403)
+    return path
+
+
+def _send_audio(path: str, **kwargs):
+    ext = os.path.splitext(path)[1].lower()
+    return send_file(path, mimetype=_AUDIO_MIME.get(ext, "audio/mpeg"), **kwargs)
+
+
+def _start_process_poller(job, detail: str):
+    syslog_sender.send(f"{job.kind}_started id={job.download_id} file={job.title} {detail}".rstrip())
+    _start_poller(job.download_id)
+    return jsonify({"download_id": job.download_id, "status": job.status,
+                    "kind": job.kind, "label": job.label, "title": job.title})
+
+
+def _start_normalize(path: str):
+    """Start (or join) a normalize job for path. Returns (job, created)."""
+    job, created = download_manager.create_normalize_job(path, get_session_id())
+    if created:
+        syslog_sender.send(
+            f"normalize_started id={job.download_id} file={os.path.basename(path)}")
+        _start_poller(job.download_id)
+    return job, created
+
+
+@app.route("/api/files/<file_id>/normalize", methods=["POST"])
+def api_normalize_file(file_id):
     """
-    Peak-normalize to -5 dBTP via ffmpeg loudnorm (linear, single-pass).
-    Saves result next to the original as <base>_normalized<ext>.
-    Returns path to normalized file; raises RuntimeError on failure.
+    Produce the peak-normalized copy of a library file as a background job.
+    Returns {"ready": true, "file_id", "name"} when an up-to-date copy already
+    exists, otherwise {"download_id"} of the job (stream it like a download).
     """
-    base, ext = os.path.splitext(input_path)
-    norm_path = f"{base}_normalized{ext}"
-    if os.path.isfile(norm_path):
-        return norm_path  # already processed — serve cached copy
-    cmd = [
-        FFMPEG_PATH, "-y", "-i", input_path,
-        "-vn", "-af", "loudnorm=linear=true:tp=-5",
-        norm_path,
-    ]
-    result = subprocess.run(cmd, capture_output=True, timeout=300)
-    if result.returncode != 0:
-        try:
-            os.unlink(norm_path)
-        except OSError:
-            pass
-        raise RuntimeError(
-            f"ffmpeg rc={result.returncode}: "
-            + result.stderr.decode(errors="replace")[-400:]
-        )
-    return norm_path
+    path = _resolve_file_or_abort(file_id)
+    if audio_ops.is_normalized_name(path):
+        return jsonify({"error": "This file is already a normalized copy."}), 400
+
+    if audio_ops.normalized_is_current(path):
+        norm_rel = os.path.relpath(audio_ops.normalized_path_for(path), DOWNLOADS_DIR)
+        return jsonify({
+            "ready": True,
+            "file_id": FileManager.file_id(norm_rel),
+            "name": os.path.basename(norm_rel),
+        })
+
+    job, _ = _start_normalize(path)
+    return jsonify({"download_id": job.download_id, "status": job.status})
 
 
 @app.route("/api/files/<file_id>/download")
 def api_download_file(file_id):
     """Serve an audio file to the user's browser as an attachment."""
-    path = file_manager.get_file_path(file_id)
-    if not path:
+    path = _resolve_file_or_abort(file_id)
+
+    # Legacy synchronous form of POST /normalize: blocks until the copy is ready.
+    if request.args.get("normalize") == "1" and not audio_ops.is_normalized_name(path):
+        if not audio_ops.normalized_is_current(path):
+            job, _ = _start_normalize(path)
+            if not job.wait(timeout=600) or job.status != JobStatus.COMPLETED:
+                app.logger.error("Normalization failed: %s", job.error or "timed out")
+                abort(500, description="Audio normalization failed.")
+        path = audio_ops.normalized_path_for(path)
+
+    suffix = " normalized=true" if audio_ops.is_normalized_name(path) else ""
+    syslog_sender.send(f"file_downloaded file={os.path.basename(path)}{suffix}")
+    return _send_audio(path, as_attachment=True)
+
+
+@app.route("/api/files/<file_id>/trim", methods=["POST"])
+def api_trim_file(file_id):
+    """
+    Save [start, end] seconds of a file (optional fade_in / fade_out seconds,
+    optional output name) as a new file, as a background job.
+    """
+    path = _resolve_file_or_abort(file_id)
+    data = request.get_json(silent=True) or {}
+    try:
+        start = float(data.get("start", 0))
+        end = float(data.get("end"))
+        fade_in = float(data.get("fade_in") or 0)
+        fade_out = float(data.get("fade_out") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "start, end and fades must be numbers (seconds)"}), 400
+
+    duration, _ = audio_ops.probe(FFMPEG_PATH, path)
+    if duration:
+        end = min(end, duration)
+    if start < 0 or end - start < 0.1:
+        return jsonify({"error": "Selection must be at least 0.1 s long"}), 400
+    if fade_in < 0 or fade_out < 0 or fade_in + fade_out > end - start:
+        return jsonify({"error": "Fades must be positive and fit inside the selection"}), 400
+
+    try:
+        job = download_manager.create_trim_job(
+            path, get_session_id(), start, end, fade_in, fade_out,
+            name=(data.get("name") or "").strip() or None)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return _start_process_poller(job, f"start={start:.2f} end={end:.2f}")
+
+
+@app.route("/api/files/<file_id>/convert", methods=["POST"])
+def api_convert_file(file_id):
+    """Convert a file to another format (saved as a new file) as a background job."""
+    path = _resolve_file_or_abort(file_id)
+    data = request.get_json(silent=True) or {}
+    target = "." + str(data.get("format", "")).lower().lstrip(".")
+    try:
+        job = download_manager.create_convert_job(path, get_session_id(), target)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return _start_process_poller(job, f"format={target.lstrip('.')}")
+
+
+@app.route("/api/files/<file_id>/rename", methods=["POST"])
+def api_rename_file(file_id):
+    path = _resolve_file_or_abort(file_id)
+    if download_manager.is_busy(path):
+        return jsonify({"error": "File is being processed – try again when the job finishes"}), 409
+    name = str((request.get_json(silent=True) or {}).get("name", ""))
+    try:
+        info = file_manager.rename_file(file_id, name)
+    except LookupError:
         abort(404)
-    # Ensure the path is within downloads_dir (path traversal guard)
-    if not os.path.realpath(path).startswith(os.path.realpath(DOWNLOADS_DIR)):
-        abort(403)
-    ext = os.path.splitext(path)[1].lower()
-    mime = _AUDIO_MIME.get(ext, "audio/mpeg")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except FileExistsError:
+        return jsonify({"error": "A file with that name already exists"}), 409
+    except OSError as e:
+        return jsonify({"error": f"Rename failed: {e.strerror}"}), 500
+    syslog_sender.send(f"file_renamed from={os.path.basename(path)} to={info['name']}")
+    return jsonify(info)
 
-    if request.args.get("normalize") == "1":
-        try:
-            norm_path = _get_or_create_normalized(path)
-        except (RuntimeError, subprocess.TimeoutExpired) as e:
-            app.logger.error("Normalization failed: %s", e)
-            abort(500, description="Audio normalization failed.")
-        syslog_sender.send(f"file_downloaded file={os.path.basename(norm_path)} normalized=true")
-        norm_ext = os.path.splitext(norm_path)[1].lower()
-        norm_mime = _AUDIO_MIME.get(norm_ext, "audio/mpeg")
-        return send_file(norm_path, as_attachment=True, mimetype=norm_mime)
 
-    syslog_sender.send(f"file_downloaded file={os.path.basename(path)}")
-    return send_file(path, as_attachment=True, mimetype=mime)
+@app.route("/api/files/<file_id>/peaks")
+def api_file_peaks(file_id):
+    """Waveform envelope: {"duration": s, "peaks": [0..1, ...]}."""
+    path = _resolve_file_or_abort(file_id)
+    try:
+        buckets = min(4000, max(50, int(request.args.get("n", 1000))))
+    except ValueError:
+        buckets = 1000
+    try:
+        return jsonify(audio_ops.waveform_peaks(FFMPEG_PATH, path, buckets))
+    except Exception as e:
+        app.logger.warning("Waveform failed for %s: %s", path, e)
+        return jsonify({"error": "Could not read audio for the waveform"}), 500
+
+
+class _ZipStream:
+    """Write-only sink for zipfile that hands written bytes to a generator."""
+
+    def __init__(self):
+        self._chunks = []
+
+    def write(self, data):
+        self._chunks.append(bytes(data))
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def take(self) -> bytes:
+        data, self._chunks = b"".join(self._chunks), []
+        return data
+
+
+@app.route("/api/files/zip")
+def api_zip_files():
+    """Stream the selected files (?ids=a,b,c) as one ZIP, keeping folders."""
+    ids = [i for i in request.args.get("ids", "").split(",") if i]
+    if not ids or len(ids) > 1000:
+        return jsonify({"error": "Select between 1 and 1000 files"}), 400
+    index = {f["id"]: f for f in file_manager.list_files()}
+    entries = [index[i]["path"] for i in dict.fromkeys(ids) if i in index]
+    if not entries:
+        abort(404)
+
+    def generate():
+        sink = _ZipStream()
+        # Audio is already compressed – store, don't deflate.
+        with zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+            for rel in entries:
+                full = os.path.join(DOWNLOADS_DIR, rel)
+                try:
+                    info = zipfile.ZipInfo.from_file(full, arcname=rel.replace(os.sep, "/"))
+                    with open(full, "rb") as src, zf.open(info, "w", force_zip64=True) as dst:
+                        while chunk := src.read(1 << 20):
+                            dst.write(chunk)
+                            yield sink.take()
+                except OSError:
+                    continue  # deleted since listing – skip it
+                yield sink.take()
+        yield sink.take()
+
+    syslog_sender.send(f"files_zipped count={len(entries)}")
+    name = f"bark-extractor-{datetime.now():%Y%m%d-%H%M%S}.zip"
+    return Response(
+        generate(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 @app.route("/api/files/<file_id>/stream")
 def api_stream_file(file_id):
     """Serve audio inline for in-browser playback with range-request support for seeking."""
-    path = file_manager.get_file_path(file_id)
-    if not path:
-        abort(404)
-    if not os.path.realpath(path).startswith(os.path.realpath(DOWNLOADS_DIR)):
-        abort(403)
-    ext = os.path.splitext(path)[1].lower()
-    mime = _AUDIO_MIME.get(ext, "audio/mpeg")
-    return send_file(path, mimetype=mime, conditional=True)
+    path = _resolve_file_or_abort(file_id)
+    return _send_audio(path, conditional=True)
 
 
 @app.route("/api/files/<file_id>", methods=["DELETE"])
@@ -514,6 +708,67 @@ def api_delete_file(file_id):
         syslog_sender.send(f"file_deleted file={fname}")
         return jsonify({"ok": True})
     return jsonify({"ok": False, "error": "File not found"}), 404
+
+
+# ---------------------------------------------------------------------------
+# Routes – admin
+# ---------------------------------------------------------------------------
+
+_FFMPEG_VERSION: str | None = None
+_manual_update = {"running": False, "result": None, "finished_at": None}
+
+
+@app.route("/api/admin/status")
+def api_admin_status():
+    files = file_manager.list_files()
+    try:
+        disk = shutil.disk_usage(DOWNLOADS_DIR)
+        disk_info = {"total": disk.total, "used": disk.used, "free": disk.free}
+    except OSError:
+        disk_info = None
+    stamp = tool_manager.last_update_time()
+    return jsonify({
+        "app_version": APP_VERSION,
+        "ytdlp_version": tool_manager.ytdlp_version(),
+        "ytdlp_path": YTDLP_PATH,
+        "ytdlp_last_update": datetime.fromtimestamp(stamp).isoformat(timespec="seconds") if stamp else None,
+        "ytdlp_updating": tool_manager.is_updating(),
+        "ytdlp_update": tool_manager.update_settings(),
+        "manual_update": _manual_update,
+        "deno_version": tool_manager.deno_version(),
+        "ffmpeg_version": _FFMPEG_VERSION,
+        "downloads_dir": DOWNLOADS_DIR,
+        "library": {
+            "files": len(files),
+            "bytes": sum(f["size"] for f in files),
+        },
+        "disk": disk_info,
+        "active_jobs": len(download_manager.get_active_jobs()),
+        "events": list(reversed(_events))[:100],
+    })
+
+
+@app.route("/api/admin/update-ytdlp", methods=["POST"])
+def api_admin_update_ytdlp():
+    if tool_manager.is_updating() or _manual_update["running"]:
+        return jsonify({"error": "An update is already running"}), 409
+
+    def run():
+        _manual_update.update(running=True, result=None, finished_at=None)
+        try:
+            ok = tool_manager.update_ytdlp(
+                YTDLP_PATH, tool_manager.update_settings()["channel"], _tools_log)
+            _manual_update["result"] = "ok" if ok else "failed"
+        except Exception as e:
+            _tools_log(f"Manual yt-dlp update error: {e}")
+            _manual_update["result"] = "failed"
+        finally:
+            _manual_update.update(
+                running=False, finished_at=datetime.now().isoformat(timespec="seconds"))
+
+    _tools_log("Manual yt-dlp update requested from the admin panel")
+    threading.Thread(target=run, daemon=True, name="ytdlp-manual-update").start()
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +788,9 @@ def _job_janitor():
 
 def _tools_log(msg: str):
     print(f"  [tools] {msg}", flush=True)
+    lowered = msg.lower()
+    level = "error" if any(w in lowered for w in ("fail", "error", "could not", "not found")) else "info"
+    _record_event(level, f"tools: {msg}")
     syslog_sender.send(f"tools {msg}")
 
 
@@ -577,10 +835,12 @@ def _startup():
     os.makedirs(SESSIONS_DIR, exist_ok=True)
 
     # FFmpeg presence check (warn only – the UI still serves the library)
-    import shutil as _shutil
-    if not (_shutil.which(FFMPEG_PATH) or os.path.isfile(FFMPEG_PATH)):
-        print(f"  [tools] WARNING: ffmpeg not found at {FFMPEG_PATH!r} – "
-              "audio extraction will fail until it is installed", flush=True)
+    global _FFMPEG_VERSION
+    if not (shutil.which(FFMPEG_PATH) or os.path.isfile(FFMPEG_PATH)):
+        _tools_log(f"WARNING: ffmpeg not found at {FFMPEG_PATH!r} – "
+                   "audio extraction will fail until it is installed")
+    else:
+        _FFMPEG_VERSION = tool_manager.probe_version([FFMPEG_PATH, "-version"])
 
     # Make the auto-update settings visible/editable in .env
     _seed_env_defaults()

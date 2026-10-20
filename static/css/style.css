@@ -542,3 +542,150 @@ body.player-open {
   border-left-color: rgba(68, 147, 248, 0.35);
   padding: 0 .35rem;
 }
+
+.norm-badge {
+  display: inline-block;
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .4px;
+  background: #13261c;
+  color: #3fb950;
+  border: 1px solid #1f4d30;
+  border-radius: .25rem;
+  padding: .1em .4em;
+  margin-right: .45em;
+  vertical-align: middle;
+}
+
+/* ---- Row "more actions" button ---- */
+.file-btn-more {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: .4rem;
+  font-size: .85rem;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  background: transparent;
+}
+.file-btn-more:hover,
+.file-btn-more[aria-expanded="true"] {
+  border-color: var(--bark-amber);
+  color: var(--bark-amber);
+}
+.file-btn-more::after { display: none; }   /* no caret */
+
+.dropdown-header {
+  color: var(--text-muted);
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+}
+.dropdown-divider { border-top-color: var(--border-color); }
+
+/* ---- Form controls inside modals ---- */
+.modal .form-control,
+.modal .input-group-text {
+  background-color: var(--bg-input);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+.modal .form-control:focus {
+  background-color: var(--bg-input);
+  border-color: var(--bark-amber);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 .15rem rgba(212, 135, 42, .2);
+}
+.modal .input-group-text { color: var(--text-muted); }
+.modal .form-text { color: var(--text-muted); }
+.modal-footer { border-top-color: var(--border-color); }
+
+/* ---- Settings tabs / admin panel ---- */
+.nav-tabs { border-bottom-color: var(--border-color); }
+.nav-tabs .nav-link { color: var(--text-muted); border: none; }
+.nav-tabs .nav-link:hover { color: var(--text-primary); }
+.nav-tabs .nav-link.active {
+  background: transparent;
+  color: var(--bark-amber);
+  border-bottom: 2px solid var(--bark-amber);
+}
+
+.admin-box {
+  border: 1px solid var(--border-color);
+  border-radius: .5rem;
+  padding: .75rem .9rem;
+  background: var(--bg-card-hd);
+  height: 100%;
+}
+.admin-box-title {
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: .5rem;
+}
+.admin-table { width: 100%; font-size: .82rem; }
+.admin-table th {
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: .15rem .75rem .15rem 0;
+  white-space: nowrap;
+  vertical-align: top;
+  width: 1%;
+}
+.admin-table td { padding: .15rem 0; word-break: break-word; }
+
+.admin-events {
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: .78rem;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+.admin-event { padding: .2rem 0; border-bottom: 1px solid #2a241f; }
+.admin-event:last-child { border-bottom: none; }
+.admin-event time { color: var(--text-muted); margin-right: .5rem; }
+.admin-event.level-error { color: #ff7b72; }
+
+/* ---- Waveforms ---- */
+.player-wave {
+  position: relative;
+  height: 2.2rem;
+  min-width: 80px;
+  cursor: pointer;
+}
+.player-wave canvas,
+.trim-wave-wrap canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.trim-wave-wrap {
+  position: relative;
+  height: 160px;
+  background: #140f0a;
+  border: 1px solid var(--border-color);
+  border-radius: .5rem;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+.trim-wave-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: .85rem;
+}
+
+/* Bootstrap's default muted grey is too dark on this theme */
+.text-muted { color: var(--text-muted) !important; }

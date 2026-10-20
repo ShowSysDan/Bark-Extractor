@@ -1,6 +1,6 @@
 # Bark Extractor 🐾
 
-**Version 1.1.0**
+**Version 1.2.0**
 
 A yt-dlp powered MP3 downloader with a dark web UI. Download audio from YouTube and other supported sites, manage your library, and share access across multiple users — all from a browser on port **5100**.
 
@@ -11,7 +11,15 @@ A yt-dlp powered MP3 downloader with a dark web UI. Download audio from YouTube 
 - Live progress streaming via SSE (speed, ETA, current file)
 - Stop button cancels a running or pending download and cleans up partial files
 - Persistent MP3 library shared across all users — newest files listed first
-- Checkbox selection for bulk download or bulk delete
+- Checkbox selection for bulk download (as one ZIP), bulk convert, or bulk delete
+- **Trim / fade editor** with a waveform view — drag to select, preview with
+  fades, save as a new file (the original is kept)
+- **Convert** any file to MP3, M4A, Opus, OGG, FLAC, WAV or AIFF
+- **Peak-normalize** a copy to -5 dB, with progress shown live
+- **Rename** files in place
+- Waveform seek bar in the built-in player
+- **System panel** (Settings → System): tool versions, "Update yt-dlp now",
+  disk usage, and recent errors
 - Runs as a systemd service — starts on boot, restarts on failure
 - **Self-maintaining yt-dlp** — downloaded automatically when missing and
   self-updated overnight every few days, so YouTube extraction doesn't rot
@@ -161,8 +169,9 @@ updates.
 Bark-Extractor/
 ├── BarkExtractor            # Main executable (Flask app, routes, SSE logic)
 ├── bark_extractor/
-│   ├── downloader.py        # DownloadManager, job lifecycle, yt-dlp subprocess
+│   ├── downloader.py        # Job manager: yt-dlp downloads + ffmpeg processing jobs
 │   ├── file_manager.py      # MP3 listing, serving, deletion
+│   ├── audio_ops.py         # ffmpeg normalize / trim / convert / waveform helpers
 │   ├── syslog_sender.py     # Optional UDP syslog integration
 │   └── tool_manager.py      # yt-dlp/Deno download, startup checks, auto-update
 ├── templates/
@@ -187,8 +196,62 @@ Bark-Extractor/
 5. Click **Stop** at any time to cancel and clean up partial files
 6. Completed files appear in the **Downloaded MP3s** table
 7. Click the download icon to save a file to your computer, or select multiple files and use **Download Selected**
+8. The **⋯** menu on each file offers:
+   - **Download normalized (-5dB peak)** — progress shows under **Active Jobs**
+     and the file downloads when ready; the copy is kept as `<name>_normalized.<ext>`
+     (normalized copies can't be normalized again)
+   - **Trim / fade…** — waveform editor; drag across it to select, drag the
+     edges to adjust, click to set the playhead, preview with fades, then save
+     as a new file (default `<name>_trimmed.<ext>`)
+   - **Rename…**
+   - **Convert to** MP3 / M4A / Opus / OGG / FLAC / WAV (16-bit) / AIFF (16-bit)
+9. Select several files and use **Download Selected** to get them as one ZIP
+   (folders preserved), or its dropdown to normalize or convert them all
+10. **Settings → System** shows tool versions, disk space and recent errors, and
+    can trigger a yt-dlp update immediately
 
 ## Changelog
+
+### 1.2.0
+- **Trim / fade editor** with waveform: select a region by dragging, adjust
+  the edges, preview it (fades included), and save it as a new file
+- **Convert** files to MP3, M4A, Opus, OGG, FLAC, WAV or AIFF (new files; the
+  original is kept). Lossy targets use high-quality presets (MP3 V0, AAC
+  256k, Opus 160k, Vorbis q6); WAV/AIFF are 16-bit
+- **Rename** files from the library (normalized copies keep their marker)
+- **Download Selected** now delivers several files as a single ZIP, streamed
+  without a temp file and keeping playlist folders; bulk convert added
+- **Waveform seek bar** in the player
+- **System panel** in Settings: app / yt-dlp / Deno / FFmpeg versions,
+  auto-update schedule, "Update yt-dlp now", disk usage, recent errors
+- Added OGG and WAV to the download format list. Fixed OGG downloads, which
+  yt-dlp rejected (it calls the format "vorbis")
+- Trim / convert / normalize share a job queue (2 at a time) with live
+  progress, cancel, and logs in Active Jobs
+
+### 1.1.1
+- **Normalization now runs as a background job with a progress bar** in the
+  Active Jobs panel (two passes: measure peak, apply gain); the file downloads
+  automatically when it's ready, and a reload re-attaches to running jobs
+- Normalized copies (`*_normalized.*`) are tagged **NORM** in the library and
+  can no longer be normalized again (UI hides the option; the API refuses it)
+- Fixed normalization not doing what it says: the old single-pass `loudnorm`
+  targeted -24 LUFS with dynamic compression (peaks ended far below -5 dB) and
+  resampled FLAC/WAV to 192 kHz. It is now a true peak normalize to -5 dB at
+  the source sample rate and bitrate
+- Normalized output is written to a temp file and renamed into place, so a
+  failed/timed-out run can no longer leave a truncated file that was later
+  served as the "cached" copy; concurrent requests for the same file share
+  one job, and at most two normalizations run at once
+- Cancelling a download no longer deletes other users' in-progress partial
+  files (cleanup is limited to the cancelled job's own files)
+- Jobs that finish (or fail) before the browser's progress stream connects
+  no longer leave a card stuck on "pending"
+- File list: 30-second auto-refresh no longer flickers or clears checkbox
+  selections; "Select All" only selects rows visible under the search filter
+  (and filtering deselects hidden rows) so bulk delete can't hit hidden files;
+  bulk delete asks for confirmation once instead of once per file
+- The Extract button keeps the selected format's label after submitting
 
 ### 1.1.0 (2026-09-08)
 - **Fixed YouTube downloads failing with HTTP 403** — two causes: the yt-dlp

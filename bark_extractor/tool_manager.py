@@ -54,6 +54,9 @@ _UPDATE_TIMEOUT = 300        # seconds for a self-update run
 
 # Cached versions so /api/version doesn't spawn a subprocess per request.
 _versions = {"ytdlp": None, "deno": None}
+# Effective auto-update settings, filled in by bootstrap() (for the admin panel).
+_settings = {"channel": "nightly", "auto_update": False,
+             "interval_days": None, "update_hour": None}
 _update_lock = threading.Lock()
 
 
@@ -186,8 +189,9 @@ def update_ytdlp(ytdlp_path: str, channel: str = "nightly", log=_default_log) ->
                     _write_stamp()
                     log(f"yt-dlp self-update OK ({channel}): now {version}")
                     return True
+                out = (r.stderr or r.stdout).strip().splitlines()
                 log("yt-dlp self-update failed: "
-                    + (r.stderr or r.stdout).strip().splitlines()[-1][:200])
+                    + (out[-1][:200] if out else f"exit code {r.returncode}"))
             except (OSError, subprocess.SubprocessError) as exc:
                 log(f"yt-dlp self-update error: {exc}")
 
@@ -218,6 +222,23 @@ def ensure_ytdlp_fresh(ytdlp_path: str, channel: str, log=_default_log) -> str |
 
 def ytdlp_version() -> str | None:
     return _versions["ytdlp"]
+
+
+def update_settings() -> dict:
+    return dict(_settings)
+
+
+def last_update_time() -> float | None:
+    """Unix time of the last successful yt-dlp download/update, if any."""
+    return _read_stamp() or None
+
+
+def is_updating() -> bool:
+    return _update_lock.locked()
+
+
+def probe_version(cmd: list[str]) -> str | None:
+    return _probe_version(cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +391,9 @@ def bootstrap(ytdlp_path: str = "./yt-dlp", start_updater: bool = True, log=_def
         update_hour = min(23, max(0, int(os.getenv("YTDLP_UPDATE_HOUR", "3"))))
     except ValueError:
         update_hour = 3
+
+    _settings.update(channel=channel, auto_update=auto_update,
+                     interval_days=interval_days, update_hour=update_hour)
 
     try:
         ensure_ytdlp(ytdlp_path, channel, log)
