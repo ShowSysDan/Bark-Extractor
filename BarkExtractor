@@ -9,7 +9,6 @@ import json
 import time
 import uuid
 import queue
-import subprocess
 import threading
 from pathlib import Path
 from datetime import timedelta
@@ -33,9 +32,9 @@ from dotenv import load_dotenv
 
 from bark_extractor.downloader import DownloadManager, JobStatus
 from bark_extractor.file_manager import FileManager
-from bark_extractor import syslog_sender, tool_manager
+from bark_extractor import normalizer, syslog_sender, tool_manager
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -121,6 +120,25 @@ def _push_sse(download_id: str, data: dict):
                 pass
 
 
+def _job_payload(job) -> dict:
+    """Job state for the API, plus the library id of a normalize job's output."""
+    data = job.to_dict()
+    if job.result_file:
+        data["result_file_id"] = FileManager.file_id(job.result_file)
+        data["result_name"] = os.path.basename(job.result_file)
+    return data
+
+
+def _done_event(job) -> dict:
+    data = _job_payload(job)
+    data["type"] = "done"
+    return data
+
+
+def _start_poller(download_id: str):
+    threading.Thread(target=_sse_poller, args=(download_id,), daemon=True).start()
+
+
 def _sse_poller(download_id: str):
     """
     Background thread that polls the job and emits SSE events until it finishes.
@@ -143,38 +161,36 @@ def _sse_poller(download_id: str):
         _push_sse(download_id, {
             "type": "progress",
             "download_id": download_id,
+            "kind": job.kind,
+            "title": job.title,
             "status": job.status,
             "progress": job.progress,
             "speed": job.speed,
             "eta": job.eta,
             "current_file": job.current_file,
+            "stage": job.stage,
         })
 
-        if job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+        if job.is_finished:
             # Syslog lifecycle event
+            target = f"url={job.url}" if job.kind == "download" else f"file={job.title}"
             if job.status == JobStatus.COMPLETED:
                 syslog_sender.send(
-                    f"download_completed id={download_id} "
-                    f"files={len(job.files_downloaded)} url={job.url}"
+                    f"{job.kind}_completed id={download_id} "
+                    f"files={len(job.files_downloaded)} {target}"
                 )
             elif job.status == JobStatus.FAILED:
                 syslog_sender.send(
-                    f"download_failed id={download_id} "
-                    f"error={job.error!r} url={job.url}"
+                    f"{job.kind}_failed id={download_id} "
+                    f"error={job.error!r} {target}"
                 )
             elif job.status == JobStatus.CANCELLED:
                 syslog_sender.send(
-                    f"download_cancelled id={download_id} url={job.url}"
+                    f"{job.kind}_cancelled id={download_id} {target}"
                 )
 
             # Final event
-            _push_sse(download_id, {
-                "type": "done",
-                "download_id": download_id,
-                "status": job.status,
-                "files_downloaded": job.files_downloaded,
-                "error": job.error,
-            })
+            _push_sse(download_id, _done_event(job))
             break
 
         time.sleep(0.5)
@@ -328,12 +344,7 @@ def api_start_download():
     )
 
     syslog_sender.send(f"download_started id={job.download_id} url={url}")
-
-    # Start SSE poller thread
-    poller = threading.Thread(
-        target=_sse_poller, args=(job.download_id,), daemon=True
-    )
-    poller.start()
+    _start_poller(job.download_id)
 
     return jsonify({"download_id": job.download_id, "status": job.status})
 
@@ -341,7 +352,9 @@ def api_start_download():
 @app.route("/api/download/<download_id>/stop", methods=["POST"])
 def api_stop_download(download_id):
     if download_manager.cancel_job(download_id):
-        syslog_sender.send(f"download_stop_requested id={download_id}")
+        job = download_manager.get_job(download_id)
+        kind = job.kind if job else "download"
+        syslog_sender.send(f"{kind}_stop_requested id={download_id}")
         return jsonify({"ok": True, "message": "Cancellation requested"})
     return jsonify({"ok": False, "message": "Job not found or already finished"}), 404
 
@@ -351,7 +364,7 @@ def api_download_status(download_id):
     job = download_manager.get_job(download_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
-    return jsonify(job.to_dict())
+    return jsonify(_job_payload(job))
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +386,18 @@ def api_download_stream(download_id):
         try:
             # Send a heartbeat immediately so the browser connection opens
             yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+            # A job that failed fast (or a page reload after it finished)
+            # can complete before this stream subscribes; its final event
+            # was broadcast to nobody, so report the outcome directly.
+            job = download_manager.get_job(download_id)
+            if job is None:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Job not found'})}\n\n"
+                yield f"data: {json.dumps({'type': 'close'})}\n\n"
+                return
+            if job.is_finished:
+                yield f"data: {json.dumps(_done_event(job))}\n\n"
+                yield f"data: {json.dumps({'type': 'close'})}\n\n"
+                return
             while True:
                 try:
                     msg = q.get(timeout=30)
@@ -437,72 +462,80 @@ def api_get_file(file_id):
     return jsonify(info)
 
 
-def _get_or_create_normalized(input_path: str) -> str:
+def _resolve_file_or_abort(file_id: str) -> str:
+    """Map a library file id to its absolute path, or abort with 404/403."""
+    path = file_manager.get_file_path(file_id)
+    if not path:
+        abort(404)
+    # Path traversal guard: the file must live inside downloads_dir
+    real, root = os.path.realpath(path), os.path.realpath(DOWNLOADS_DIR)
+    if os.path.commonpath([real, root]) != root:
+        abort(403)
+    return path
+
+
+def _send_audio(path: str, **kwargs):
+    ext = os.path.splitext(path)[1].lower()
+    return send_file(path, mimetype=_AUDIO_MIME.get(ext, "audio/mpeg"), **kwargs)
+
+
+def _start_normalize(path: str):
+    """Start (or join) a normalize job for path. Returns (job, created)."""
+    job, created = download_manager.create_normalize_job(path, get_session_id())
+    if created:
+        syslog_sender.send(
+            f"normalize_started id={job.download_id} file={os.path.basename(path)}")
+        _start_poller(job.download_id)
+    return job, created
+
+
+@app.route("/api/files/<file_id>/normalize", methods=["POST"])
+def api_normalize_file(file_id):
     """
-    Peak-normalize to -5 dBTP via ffmpeg loudnorm (linear, single-pass).
-    Saves result next to the original as <base>_normalized<ext>.
-    Returns path to normalized file; raises RuntimeError on failure.
+    Produce the peak-normalized copy of a library file as a background job.
+    Returns {"ready": true, "file_id", "name"} when an up-to-date copy already
+    exists, otherwise {"download_id"} of the job (stream it like a download).
     """
-    base, ext = os.path.splitext(input_path)
-    norm_path = f"{base}_normalized{ext}"
-    if os.path.isfile(norm_path):
-        return norm_path  # already processed — serve cached copy
-    cmd = [
-        FFMPEG_PATH, "-y", "-i", input_path,
-        "-vn", "-af", "loudnorm=linear=true:tp=-5",
-        norm_path,
-    ]
-    result = subprocess.run(cmd, capture_output=True, timeout=300)
-    if result.returncode != 0:
-        try:
-            os.unlink(norm_path)
-        except OSError:
-            pass
-        raise RuntimeError(
-            f"ffmpeg rc={result.returncode}: "
-            + result.stderr.decode(errors="replace")[-400:]
-        )
-    return norm_path
+    path = _resolve_file_or_abort(file_id)
+    if normalizer.is_normalized_name(path):
+        return jsonify({"error": "This file is already a normalized copy."}), 400
+
+    if normalizer.normalized_is_current(path):
+        norm_rel = os.path.relpath(normalizer.normalized_path_for(path), DOWNLOADS_DIR)
+        return jsonify({
+            "ready": True,
+            "file_id": FileManager.file_id(norm_rel),
+            "name": os.path.basename(norm_rel),
+        })
+
+    job, _ = _start_normalize(path)
+    return jsonify({"download_id": job.download_id, "status": job.status})
 
 
 @app.route("/api/files/<file_id>/download")
 def api_download_file(file_id):
     """Serve an audio file to the user's browser as an attachment."""
-    path = file_manager.get_file_path(file_id)
-    if not path:
-        abort(404)
-    # Ensure the path is within downloads_dir (path traversal guard)
-    if not os.path.realpath(path).startswith(os.path.realpath(DOWNLOADS_DIR)):
-        abort(403)
-    ext = os.path.splitext(path)[1].lower()
-    mime = _AUDIO_MIME.get(ext, "audio/mpeg")
+    path = _resolve_file_or_abort(file_id)
 
-    if request.args.get("normalize") == "1":
-        try:
-            norm_path = _get_or_create_normalized(path)
-        except (RuntimeError, subprocess.TimeoutExpired) as e:
-            app.logger.error("Normalization failed: %s", e)
-            abort(500, description="Audio normalization failed.")
-        syslog_sender.send(f"file_downloaded file={os.path.basename(norm_path)} normalized=true")
-        norm_ext = os.path.splitext(norm_path)[1].lower()
-        norm_mime = _AUDIO_MIME.get(norm_ext, "audio/mpeg")
-        return send_file(norm_path, as_attachment=True, mimetype=norm_mime)
+    # Legacy synchronous form of POST /normalize: blocks until the copy is ready.
+    if request.args.get("normalize") == "1" and not normalizer.is_normalized_name(path):
+        if not normalizer.normalized_is_current(path):
+            job, _ = _start_normalize(path)
+            if not job.wait(timeout=600) or job.status != JobStatus.COMPLETED:
+                app.logger.error("Normalization failed: %s", job.error or "timed out")
+                abort(500, description="Audio normalization failed.")
+        path = normalizer.normalized_path_for(path)
 
-    syslog_sender.send(f"file_downloaded file={os.path.basename(path)}")
-    return send_file(path, as_attachment=True, mimetype=mime)
+    suffix = " normalized=true" if normalizer.is_normalized_name(path) else ""
+    syslog_sender.send(f"file_downloaded file={os.path.basename(path)}{suffix}")
+    return _send_audio(path, as_attachment=True)
 
 
 @app.route("/api/files/<file_id>/stream")
 def api_stream_file(file_id):
     """Serve audio inline for in-browser playback with range-request support for seeking."""
-    path = file_manager.get_file_path(file_id)
-    if not path:
-        abort(404)
-    if not os.path.realpath(path).startswith(os.path.realpath(DOWNLOADS_DIR)):
-        abort(403)
-    ext = os.path.splitext(path)[1].lower()
-    mime = _AUDIO_MIME.get(ext, "audio/mpeg")
-    return send_file(path, mimetype=mime, conditional=True)
+    path = _resolve_file_or_abort(file_id)
+    return _send_audio(path, conditional=True)
 
 
 @app.route("/api/files/<file_id>", methods=["DELETE"])

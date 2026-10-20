@@ -186,8 +186,9 @@ def update_ytdlp(ytdlp_path: str, channel: str = "nightly", log=_default_log) ->
                     _write_stamp()
                     log(f"yt-dlp self-update OK ({channel}): now {version}")
                     return True
+                out = (r.stderr or r.stdout).strip().splitlines()
                 log("yt-dlp self-update failed: "
-                    + (r.stderr or r.stdout).strip().splitlines()[-1][:200])
+                    + (out[-1][:200] if out else f"exit code {r.returncode}"))
             except (OSError, subprocess.SubprocessError) as exc:
                 log(f"yt-dlp self-update error: {exc}")
 

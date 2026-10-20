@@ -7,6 +7,8 @@ import os
 import hashlib
 from datetime import datetime
 
+from bark_extractor.normalizer import is_normalized_name
+
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".opus", ".flac", ".ogg", ".wav"}
 
 
@@ -38,9 +40,10 @@ class FileManager:
                 try:
                     stat = os.stat(fpath)
                     results.append({
-                        "id": self._file_id(rel),
+                        "id": self.file_id(rel),
                         "name": fname,
                         "path": rel,
+                        "normalized": is_normalized_name(fname),
                         "size": stat.st_size,
                         "size_human": self._human_size(stat.st_size),
                         "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
@@ -98,7 +101,7 @@ class FileManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _file_id(rel_path: str) -> str:
+    def file_id(rel_path: str) -> str:
         """Stable ID derived from relative path."""
         return hashlib.sha1(rel_path.encode()).hexdigest()[:16]
 

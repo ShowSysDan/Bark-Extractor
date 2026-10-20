@@ -1,6 +1,6 @@
 # Bark Extractor 🐾
 
-**Version 1.1.0**
+**Version 1.1.1**
 
 A yt-dlp powered MP3 downloader with a dark web UI. Download audio from YouTube and other supported sites, manage your library, and share access across multiple users — all from a browser on port **5100**.
 
@@ -163,6 +163,7 @@ Bark-Extractor/
 ├── bark_extractor/
 │   ├── downloader.py        # DownloadManager, job lifecycle, yt-dlp subprocess
 │   ├── file_manager.py      # MP3 listing, serving, deletion
+│   ├── normalizer.py        # Peak-normalization ffmpeg commands and parsing
 │   ├── syslog_sender.py     # Optional UDP syslog integration
 │   └── tool_manager.py      # yt-dlp/Deno download, startup checks, auto-update
 ├── templates/
@@ -187,8 +188,35 @@ Bark-Extractor/
 5. Click **Stop** at any time to cancel and clean up partial files
 6. Completed files appear in the **Downloaded MP3s** table
 7. Click the download icon to save a file to your computer, or select multiple files and use **Download Selected**
+8. Use the arrow next to the download icon → **Normalized (-5dB peak)** to get a
+   peak-normalized copy; progress shows under **Active Jobs** and the file
+   downloads when ready. The copy is saved in the library as `<name>_normalized.<ext>`
 
 ## Changelog
+
+### 1.1.1
+- **Normalization now runs as a background job with a progress bar** in the
+  Active Jobs panel (two passes: measure peak, apply gain); the file downloads
+  automatically when it's ready, and a reload re-attaches to running jobs
+- Normalized copies (`*_normalized.*`) are tagged **NORM** in the library and
+  can no longer be normalized again (UI hides the option; the API refuses it)
+- Fixed normalization not doing what it says: the old single-pass `loudnorm`
+  targeted -24 LUFS with dynamic compression (peaks ended far below -5 dB) and
+  resampled FLAC/WAV to 192 kHz. It is now a true peak normalize to -5 dB at
+  the source sample rate and bitrate
+- Normalized output is written to a temp file and renamed into place, so a
+  failed/timed-out run can no longer leave a truncated file that was later
+  served as the "cached" copy; concurrent requests for the same file share
+  one job, and at most two normalizations run at once
+- Cancelling a download no longer deletes other users' in-progress partial
+  files (cleanup is limited to the cancelled job's own files)
+- Jobs that finish (or fail) before the browser's progress stream connects
+  no longer leave a card stuck on "pending"
+- File list: 30-second auto-refresh no longer flickers or clears checkbox
+  selections; "Select All" only selects rows visible under the search filter
+  (and filtering deselects hidden rows) so bulk delete can't hit hidden files;
+  bulk delete asks for confirmation once instead of once per file
+- The Extract button keeps the selected format's label after submitting
 
 ### 1.1.0 (2026-09-08)
 - **Fixed YouTube downloads failing with HTTP 403** — two causes: the yt-dlp

@@ -85,10 +85,12 @@ function renderDownloadItem(d) {
   if (job.status === 'completed') barClass += ' bg-success';
   else if (job.status === 'failed' || job.status === 'cancelled') barClass += ' bg-danger';
 
+  const isNorm = job.kind === 'normalize';
   const metaParts = [];
+  if (isNorm && job.stage) metaParts.push(`<i class="bi bi-soundwave"></i> ${escHtml(job.stage)}…`);
   if (job.speed)        metaParts.push(`<i class="bi bi-speedometer2"></i> ${escHtml(job.speed)}`);
   if (job.eta)          metaParts.push(`<i class="bi bi-clock"></i> ETA ${escHtml(job.eta)}`);
-  if (job.current_file) metaParts.push(`<i class="bi bi-file-earmark-music"></i> ${escHtml(job.current_file)}`);
+  if (job.current_file && !isNorm) metaParts.push(`<i class="bi bi-file-earmark-music"></i> ${escHtml(job.current_file)}`);
 
   return `
   <div class="download-item ${statusCls}" id="item-${job.download_id}">
@@ -96,7 +98,9 @@ function renderDownloadItem(d) {
       <div class="flex-grow-1 min-w-0">
         <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
           <span class="status-badge ${statusCls}">${job.status}</span>
-          <span class="download-url flex-grow-1">${escHtml(job.url)}</span>
+          ${isNorm
+            ? `<span class="download-url flex-grow-1"><i class="bi bi-soundwave me-1"></i>Normalize: ${escHtml(job.title || '')}</span>`
+            : `<span class="download-url flex-grow-1">${escHtml(job.url || '')}</span>`}
         </div>
 
         ${metaParts.length ? `<div class="meta-info d-flex mb-1">${metaParts.join(' &nbsp;')}</div>` : ''}
@@ -111,7 +115,7 @@ function renderDownloadItem(d) {
       </div>
 
       <div class="d-flex flex-column gap-1 flex-shrink-0">
-        ${isActive ? `<button class="btn btn-outline btn-stop" data-stop="${job.download_id}" title="Stop download">
+        ${isActive ? `<button class="btn btn-outline btn-stop" data-stop="${job.download_id}" title="${isNorm ? 'Stop normalizing' : 'Stop download'}">
           <i class="bi bi-stop-fill"></i> Stop
         </button>` : ''}
         <button class="btn btn-outline btn-log" data-log="${job.download_id}" title="View log">
@@ -123,10 +127,11 @@ function renderDownloadItem(d) {
 }
 
 function stopDownload(downloadId) {
+  const isNorm = activeDownloads.get(downloadId)?.job.kind === 'normalize';
   fetch(`/api/download/${downloadId}/stop`, { method: 'POST' })
     .then(r => r.json())
     .then(data => {
-      if (data.ok) toast('Download cancelled – cleaning up partial files…', 'warning');
+      if (data.ok) toast(isNorm ? 'Normalization cancelled.' : 'Download cancelled – cleaning up partial files…', 'warning');
       else toast(data.message || 'Could not stop download', 'danger');
     })
     .catch(() => toast('Network error', 'danger'));
@@ -163,8 +168,21 @@ function showLog(downloadId) {
 // SSE – subscribe to a download stream
 // ----------------------------------------------------------------
 
-function subscribeToDownload(downloadId, knownUrl = '') {
-  const entry = { job: { download_id: downloadId, status: 'pending', progress: 0, url: knownUrl }, logLines: [], sse: null };
+// jobInit seeds the card before the first SSE event (url, kind, title).
+// autoDownload: when a normalize job completes, download its output file.
+function subscribeToDownload(downloadId, jobInit = {}, { autoDownload = false } = {}) {
+  const existing = activeDownloads.get(downloadId);
+  if (existing) {
+    // Already tracking this job (e.g. normalize requested twice) – just
+    // upgrade it to auto-download if asked.
+    if (autoDownload) existing.autoDownload = true;
+    return;
+  }
+
+  const entry = {
+    job: { status: 'pending', progress: 0, url: '', ...jobInit, download_id: downloadId },
+    logLines: [], sse: null, autoDownload, finished: false,
+  };
   activeDownloads.set(downloadId, entry);
   renderActiveSection();
 
@@ -195,23 +213,14 @@ function subscribeToDownload(downloadId, knownUrl = '') {
         break;
 
       case 'done':
-        Object.assign(d.job, data);
         sse.close();
+        finishJob(downloadId, data);
+        break;
+
+      case 'error':
+        sse.close();
+        activeDownloads.delete(downloadId);
         renderActiveSection();
-        // Reload file list so new MP3s appear immediately
-        if (data.status === 'completed') {
-          toast('Download complete! 🎵', 'success');
-          loadFileList();
-        } else if (data.status === 'cancelled') {
-          toast('Download cancelled.', 'secondary');
-        } else {
-          toast(`Download failed: ${data.error || 'unknown error'}`, 'danger');
-        }
-        // Remove from map after a short delay so user can read the state
-        setTimeout(() => {
-          activeDownloads.delete(downloadId);
-          renderActiveSection();
-        }, 8000);
         break;
 
       case 'close':
@@ -222,7 +231,7 @@ function subscribeToDownload(downloadId, knownUrl = '') {
 
   sse.onerror = () => {
     const d = activeDownloads.get(downloadId);
-    if (d && ['pending','running'].includes(d.job.status)) {
+    if (d && !d.finished) {
       // Poll status as fallback
       pollJobStatus(downloadId);
     }
@@ -230,21 +239,72 @@ function subscribeToDownload(downloadId, knownUrl = '') {
   };
 }
 
+// Final state for a job – reached via SSE 'done' or the polling fallback.
+function finishJob(downloadId, job) {
+  const d = activeDownloads.get(downloadId);
+  if (!d || d.finished) return;
+  d.finished = true;
+  Object.assign(d.job, job);
+  renderActiveSection();
+
+  const isNorm = d.job.kind === 'normalize';
+  if (job.status === 'completed') {
+    if (isNorm) {
+      toast(`Normalized: ${d.job.title || 'file'}`, 'success');
+      if (d.autoDownload && job.result_file_id) downloadFile(job.result_file_id, job.result_name);
+    } else {
+      toast('Download complete! 🎵', 'success');
+    }
+    // Reload file list so new files appear immediately
+    loadFileList({ silent: true });
+  } else if (job.status === 'cancelled') {
+    toast(isNorm ? 'Normalization cancelled.' : 'Download cancelled.', 'secondary');
+  } else {
+    toast(`${isNorm ? 'Normalization' : 'Download'} failed: ${job.error || 'unknown error'}`, 'danger');
+  }
+  // Remove from map after a short delay so user can read the state
+  setTimeout(() => {
+    activeDownloads.delete(downloadId);
+    renderActiveSection();
+  }, 8000);
+}
+
 function pollJobStatus(downloadId) {
   fetch(`/api/download/${downloadId}/status`)
-    .then(r => r.json())
+    .then(r => {
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
     .then(job => {
       const d = activeDownloads.get(downloadId);
       if (!d) return;
-      d.job = job;
-      renderActiveSection();
+      if (!job) {
+        // Server no longer knows this job (e.g. restarted) – drop the card.
+        activeDownloads.delete(downloadId);
+        renderActiveSection();
+        return;
+      }
       if (['pending','running'].includes(job.status)) {
+        Object.assign(d.job, job);
+        renderActiveSection();
         setTimeout(() => pollJobStatus(downloadId), 1500);
       } else {
-        if (job.status === 'completed') loadFileList();
-        setTimeout(() => { activeDownloads.delete(downloadId); renderActiveSection(); }, 8000);
+        finishJob(downloadId, job);
       }
-    });
+    })
+    .catch(() => setTimeout(() => pollJobStatus(downloadId), 5000));
+}
+
+// Re-attach to this session's running jobs after a page reload.
+async function restoreActiveJobs() {
+  try {
+    const res = await fetch('/api/queue/mine');
+    if (!res.ok) return;
+    const jobs = await res.json();
+    jobs.filter(j => ['pending','running'].includes(j.status))
+        .forEach(j => subscribeToDownload(j.download_id, j));
+  } catch { /* non-fatal */ }
 }
 
 // ----------------------------------------------------------------
@@ -264,10 +324,13 @@ playlistChk.addEventListener('change', () => {
   organizeRow.style.setProperty('display', playlistChk.checked ? '' : 'none', 'important');
 });
 
-formatSel.addEventListener('change', () => {
+function resetDownloadBtn() {
   const fmt = formatSel.value.toUpperCase();
   downloadBtn.innerHTML = `<i class="bi bi-music-note-beamed me-1"></i> Extract ${fmt}`;
-});
+}
+
+formatSel.addEventListener('change', resetDownloadBtn);
+resetDownloadBtn();
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -300,7 +363,7 @@ form.addEventListener('submit', async (e) => {
       toast(data.error || 'Failed to start download', 'danger');
     } else {
       // Pass URL so it shows immediately in the download card
-      subscribeToDownload(data.download_id, url);
+      subscribeToDownload(data.download_id, { url });
       urlInput.value = '';
       toast('Download queued! 🐾', 'success');
     }
@@ -308,7 +371,7 @@ form.addEventListener('submit', async (e) => {
     toast('Network error – could not reach server', 'danger');
   } finally {
     downloadBtn.disabled = false;
-    downloadBtn.innerHTML = '<i class="bi bi-music-note-beamed me-1"></i> Extract MP3';
+    resetDownloadBtn();
   }
 });
 
@@ -317,42 +380,64 @@ form.addEventListener('submit', async (e) => {
 // ----------------------------------------------------------------
 
 let allFiles = [];
+let lastFilesJson = null;
 
-async function loadFileList() {
+// silent: background refresh – no spinner, no error toast, and the table is
+// only rebuilt when the list actually changed (keeps open menus and checks).
+async function loadFileList({ silent = false } = {}) {
   const loading     = document.getElementById('filesLoading');
   const empty       = document.getElementById('filesEmpty');
   const tableWrap   = document.getElementById('filesTableWrap');
   const tbody       = document.getElementById('filesTbody');
   const fileCount   = document.getElementById('fileCount');
 
-  loading.style.display = '';
-  empty.style.display   = 'none';
-  tableWrap.style.display = 'none';
+  if (!silent) {
+    loading.style.display = '';
+    empty.style.display   = 'none';
+    tableWrap.style.display = 'none';
+  }
 
+  let files, json;
   try {
     const res = await fetch('/api/files');
-    allFiles = await res.json();
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    json = await res.text();
+    files = JSON.parse(json);
   } catch {
-    toast('Could not load file list', 'danger');
-    loading.style.display = 'none';
+    if (!silent) {
+      toast('Could not load file list', 'danger');
+      loading.style.display = 'none';
+      if (allFiles.length) tableWrap.style.display = '';
+    }
     return;
   }
 
   loading.style.display = 'none';
+  if (silent && json === lastFilesJson) return;
+  lastFilesJson = json;
+  allFiles = files;
+
   fileCount.textContent = allFiles.length;
   updateDiskUsage();
 
   if (allFiles.length === 0) {
     empty.style.display = '';
+    tableWrap.style.display = 'none';
+    tbody.innerHTML = '';
     updateSelectionToolbar();
     return;
   }
+  empty.style.display = 'none';
+
+  // Keep the user's selection across re-renders
+  const checkedIds = new Set($$('.row-chk:checked').map(c => c.value));
 
   tableWrap.style.display = '';
   tbody.innerHTML = allFiles.map(f => renderFileRow(f)).join('');
 
   // Wire row checkboxes
   tbody.querySelectorAll('.row-chk').forEach(chk => {
+    if (checkedIds.has(chk.value)) chk.checked = true;
     chk.addEventListener('change', updateSelectionToolbar);
   });
 
@@ -368,7 +453,7 @@ async function loadFileList() {
 
   // Wire per-file normalized-download dropdown items
   tbody.querySelectorAll('[data-dl-norm]').forEach(btn => {
-    btn.addEventListener('click', () => downloadFile(btn.dataset.dlNorm, btn.dataset.name, true));
+    btn.addEventListener('click', () => downloadNormalized(btn.dataset.dlNorm));
   });
 
   // Wire per-file delete buttons
@@ -376,19 +461,40 @@ async function loadFileList() {
     btn.addEventListener('click', () => deleteFile(btn.dataset.del, btn.closest('tr')));
   });
 
-  updateSelectionToolbar();
-  filterFiles(); // re-apply any active search after reload
+  filterFiles(); // re-apply any active search after reload (also syncs the toolbar)
 }
 
 function renderFileRow(f) {
   const folder = f.folder && f.folder !== '.' ? `<span class="folder-badge">${escHtml(f.folder)}</span>` : '';
   const ext    = f.name.split('.').pop().toUpperCase();
+  const normBadge = f.normalized ? '<span class="norm-badge" title="Peak-normalized copy">NORM</span>' : '';
+  // A normalized copy can't be normalized again – plain download button only.
+  const dlControls = f.normalized
+    ? `<button class="btn btn-sm file-btn-dl" data-dl="${f.id}" data-name="${escHtml(f.name)}" title="Download">
+          <i class="bi bi-download"></i>
+        </button>`
+    : `<div class="btn-group" role="group">
+          <button class="btn btn-sm file-btn-dl" data-dl="${f.id}" data-name="${escHtml(f.name)}" title="Download original">
+            <i class="bi bi-download"></i>
+          </button>
+          <button type="button" class="btn btn-sm file-btn-dl dropdown-toggle dropdown-toggle-split"
+                  data-bs-toggle="dropdown" aria-expanded="false" title="Download options">
+            <span class="visually-hidden">Download options</span>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li>
+              <button class="dropdown-item" data-dl-norm="${f.id}">
+                <i class="bi bi-soundwave me-2"></i>Normalized (-5dB peak)
+              </button>
+            </li>
+          </ul>
+        </div>`;
   return `
   <tr data-id="${f.id}">
     <td><input type="checkbox" class="form-check-input row-chk" value="${f.id}" /></td>
     <td>
       <div class="file-name" title="${escHtml(f.name)}">
-        <span class="fmt-badge">${escHtml(ext)}</span>${escHtml(f.name)}
+        <span class="fmt-badge">${escHtml(ext)}</span>${normBadge}${escHtml(f.name)}
       </div>
     </td>
     <td class="d-none d-md-table-cell">${folder}</td>
@@ -399,28 +505,21 @@ function renderFileRow(f) {
         <button class="btn btn-sm file-btn-play" data-play="${f.id}" data-name="${escHtml(f.name)}" title="Play in browser">
           <i class="bi bi-play-fill"></i>
         </button>
-        <div class="btn-group" role="group">
-          <button class="btn btn-sm file-btn-dl" data-dl="${f.id}" data-name="${escHtml(f.name)}" title="Download original">
-            <i class="bi bi-download"></i>
-          </button>
-          <button type="button" class="btn btn-sm file-btn-dl dropdown-toggle dropdown-toggle-split"
-                  data-bs-toggle="dropdown" aria-expanded="false" title="Download options">
-            <span class="visually-hidden">Download options</span>
-          </button>
-          <ul class="dropdown-menu dropdown-menu-end">
-            <li>
-              <button class="dropdown-item" data-dl-norm="${f.id}" data-name="${escHtml(f.name)}">
-                <i class="bi bi-soundwave me-2"></i>Normalized (-5dB peak)
-              </button>
-            </li>
-          </ul>
-        </div>
+        ${dlControls}
         <button class="btn btn-sm file-btn-del" data-del="${f.id}" title="Delete from server">
           <i class="bi bi-trash"></i>
         </button>
       </div>
     </td>
   </tr>`;
+}
+
+// Row checkboxes not hidden by the search filter
+function visibleRowChks() {
+  return $$('#filesTbody tr')
+    .filter(r => r.style.display !== 'none')
+    .map(r => r.querySelector('.row-chk'))
+    .filter(Boolean);
 }
 
 function updateSelectionToolbar() {
@@ -437,34 +536,58 @@ function updateSelectionToolbar() {
     delBtn.style.display  = 'none';
     dlGroup.style.display = 'none';
   }
+
+  const visible = visibleRowChks();
+  document.getElementById('selectAllChk').checked =
+    visible.length > 0 && visible.every(c => c.checked);
 }
 
-function downloadFile(fileId, fileName, normalize = false) {
+function downloadFile(fileId, fileName) {
   // Trigger a browser download via a temporary <a>
-  const url = normalize
-    ? `/api/files/${fileId}/download?normalize=1`
-    : `/api/files/${fileId}/download`;
-  let dlName = fileName || 'audio';
-  if (normalize) {
-    const dot = dlName.lastIndexOf('.');
-    dlName = dot !== -1 ? dlName.slice(0, dot) + '_normalized' + dlName.slice(dot) : dlName + '_normalized';
-  }
   const a = document.createElement('a');
-  a.href = url;
-  a.download = dlName;
+  a.href = `/api/files/${fileId}/download`;
+  a.download = fileName || 'audio';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
 }
 
-async function deleteFile(fileId, rowEl) {
-  if (!confirm('Delete this file from the server?')) return;
+// Download the peak-normalized copy of a file. If it doesn't exist yet it is
+// generated as a background job (with progress in Active Jobs) and the
+// download starts when it finishes.
+async function downloadNormalized(fileId) {
+  const f = allFiles.find(x => x.id === fileId);
+  if (f && f.normalized) {
+    // Already a normalized copy – never normalize the output again.
+    downloadFile(f.id, f.name);
+    return;
+  }
+  try {
+    const res = await fetch(`/api/files/${fileId}/normalize`, { method: 'POST' });
+    let data = {};
+    try { data = await res.json(); } catch { /* non-JSON body */ }
+    if (!res.ok || data.error) {
+      toast(data.error || `Could not normalize (${res.status})`, 'danger');
+    } else if (data.ready) {
+      downloadFile(data.file_id, data.name);
+    } else {
+      subscribeToDownload(data.download_id,
+        { kind: 'normalize', title: f ? f.name : '' }, { autoDownload: true });
+    }
+  } catch {
+    toast('Network error', 'danger');
+  }
+}
+
+async function deleteFile(fileId, rowEl, { confirmFirst = true, quiet = false } = {}) {
+  if (confirmFirst && !confirm('Delete this file from the server?')) return false;
   try {
     const res = await fetch(`/api/files/${fileId}`, { method: 'DELETE' });
     const data = await res.json();
     if (data.ok) {
       rowEl.remove();
       allFiles = allFiles.filter(f => f.id !== fileId);
+      lastFilesJson = null; // local list now differs from the last fetch
       document.getElementById('fileCount').textContent = allFiles.length;
       updateDiskUsage();
       if (allFiles.length === 0) {
@@ -472,26 +595,27 @@ async function deleteFile(fileId, rowEl) {
         document.getElementById('filesEmpty').style.display     = '';
       }
       updateSelectionToolbar();
-      toast('File deleted.', 'secondary');
-    } else {
-      toast(data.error || 'Could not delete file', 'danger');
+      if (!quiet) toast('File deleted.', 'secondary');
+      return true;
     }
+    toast(data.error || 'Could not delete file', 'danger');
   } catch {
     toast('Network error', 'danger');
   }
+  return false;
 }
 
-// Select-all header checkbox
+// Select-all header checkbox (only rows visible under the current filter)
 document.getElementById('selectAllChk').addEventListener('change', function () {
-  $$('.row-chk').forEach(c => { c.checked = this.checked; });
+  visibleRowChks().forEach(c => { c.checked = this.checked; });
   updateSelectionToolbar();
 });
 
 // Select-all toolbar button
 document.getElementById('selectAllBtn').addEventListener('click', () => {
-  const allChecked = $$('.row-chk').every(c => c.checked);
-  $$('.row-chk').forEach(c => { c.checked = !allChecked; });
-  document.getElementById('selectAllChk').checked = !allChecked;
+  const visible = visibleRowChks();
+  const allChecked = visible.length > 0 && visible.every(c => c.checked);
+  visible.forEach(c => { c.checked = !allChecked; });
   updateSelectionToolbar();
 });
 
@@ -500,7 +624,7 @@ document.getElementById('downloadSelectedBtn').addEventListener('click', () => {
   const checked = $$('.row-chk:checked');
   checked.forEach((chk, i) => {
     const f = allFiles.find(x => x.id === chk.value);
-    if (f) setTimeout(() => downloadFile(f.id, f.name, false), 100 * i);
+    if (f) setTimeout(() => downloadFile(f.id, f.name), 100 * i);
   });
   toast(`Downloading ${checked.length} file(s)…`, 'info');
 });
@@ -509,20 +633,21 @@ document.getElementById('downloadSelectedBtn').addEventListener('click', () => {
 document.getElementById('downloadSelectedNormBtn').addEventListener('click', () => {
   const checked = $$('.row-chk:checked');
   checked.forEach((chk, i) => {
-    const f = allFiles.find(x => x.id === chk.value);
-    if (f) setTimeout(() => downloadFile(f.id, f.name, true), 150 * i);
+    setTimeout(() => downloadNormalized(chk.value), 150 * i);
   });
-  toast(`Downloading ${checked.length} normalized file(s)…`, 'info');
+  toast(`Preparing ${checked.length} normalized file(s)…`, 'info');
 });
 
 // Batch delete selected
 document.getElementById('deleteSelectedBtn').addEventListener('click', async () => {
   const checked = $$('.row-chk:checked');
   if (!confirm(`Delete ${checked.length} file(s) from the server?`)) return;
+  let deleted = 0;
   for (const chk of checked) {
     const row = chk.closest('tr');
-    await deleteFile(chk.value, row);
+    if (await deleteFile(chk.value, row, { confirmFirst: false, quiet: true })) deleted++;
   }
+  toast(`Deleted ${deleted} file(s).`, 'secondary');
 });
 
 // Refresh button
@@ -536,8 +661,16 @@ function filterFiles() {
   const q = document.getElementById('fileSearch').value.toLowerCase().trim();
   $$('#filesTbody tr').forEach(row => {
     const name = row.querySelector('.file-name')?.textContent.toLowerCase() || '';
-    row.style.display = (!q || name.includes(q)) ? '' : 'none';
+    const show = !q || name.includes(q);
+    row.style.display = show ? '' : 'none';
+    // Never leave hidden rows selected – bulk delete would hit files the
+    // user can't see.
+    if (!show) {
+      const chk = row.querySelector('.row-chk');
+      if (chk) chk.checked = false;
+    }
   });
+  updateSelectionToolbar();
 }
 
 document.getElementById('fileSearch').addEventListener('input', filterFiles);
@@ -688,6 +821,7 @@ playerCloseBtn.addEventListener('click', () => {
 // Init
 // ----------------------------------------------------------------
 loadFileList();
+restoreActiveJobs();
 
 // Refresh file list every 30 s (other users may be downloading)
-setInterval(loadFileList, 30_000);
+setInterval(() => loadFileList({ silent: true }), 30_000);

@@ -13,6 +13,8 @@ import subprocess
 from enum import Enum
 from datetime import datetime
 
+from bark_extractor import normalizer
+
 
 class JobStatus(str, Enum):
     PENDING = "pending"
@@ -24,9 +26,13 @@ class JobStatus(str, Enum):
 
 class DownloadJob:
     def __init__(self, download_id, url, session_id, quality="0",
-                 is_playlist=False, organize_playlist=False, audio_format="mp3"):
+                 is_playlist=False, organize_playlist=False, audio_format="mp3",
+                 kind="download", source_path=None, title=None):
         self.download_id = download_id
+        self.kind = kind                # "download" or "normalize"
         self.url = url
+        self.source_path = source_path  # normalize jobs: absolute input path
+        self.title = title or url
         self.session_id = session_id
         self.quality = quality
         self.is_playlist = is_playlist
@@ -38,6 +44,8 @@ class DownloadJob:
         self.speed = ""
         self.eta = ""
         self.current_file = ""
+        self.stage = ""
+        self.result_file = None         # normalize jobs: output path relative to downloads_dir
         self.log_lines = []
         self.error = ""
         self.started_at = None
@@ -47,10 +55,15 @@ class DownloadJob:
         self._process = None
         self._lock = threading.Lock()
         self._cancelled = threading.Event()
+        self._done = threading.Event()
+        self._destinations = []         # yt-dlp download targets (for cancel cleanup)
+        self._outputs = []              # final audio files reported by yt-dlp
 
     def to_dict(self):
         return {
             "download_id": self.download_id,
+            "kind": self.kind,
+            "title": self.title,
             "url": self.url,
             "session_id": self.session_id,
             "status": self.status,
@@ -58,6 +71,8 @@ class DownloadJob:
             "speed": self.speed,
             "eta": self.eta,
             "current_file": self.current_file,
+            "stage": self.stage,
+            "result_file": self.result_file,
             "error": self.error,
             "audio_format": self.audio_format,
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -90,6 +105,14 @@ class DownloadJob:
     def is_cancelled(self):
         return self._cancelled.is_set()
 
+    @property
+    def is_finished(self):
+        return self.status not in (JobStatus.PENDING, JobStatus.RUNNING)
+
+    def wait(self, timeout=None) -> bool:
+        """Block until the job has finished; returns False on timeout."""
+        return self._done.wait(timeout)
+
 
 class DownloadManager:
     """
@@ -97,7 +120,8 @@ class DownloadManager:
     Downloads run in background threads; progress can be streamed via SSE.
     """
 
-    def __init__(self, downloads_dir, ffmpeg_path="ffmpeg", ytdlp_path="yt-dlp"):
+    def __init__(self, downloads_dir, ffmpeg_path="ffmpeg", ytdlp_path="yt-dlp",
+                 max_concurrent_normalize=2):
         self.downloads_dir = downloads_dir
         # Resolve bare command names (e.g. "ffmpeg") to full paths so yt-dlp
         # can locate the binary via --ffmpeg-location instead of treating the
@@ -108,6 +132,10 @@ class DownloadManager:
 
         self._jobs: dict[str, DownloadJob] = {}
         self._lock = threading.Lock()
+        # Active normalize jobs keyed by source path, so repeat requests for
+        # the same file join the running job instead of racing it.
+        self._normalizing: dict[str, DownloadJob] = {}
+        self._normalize_slots = threading.Semaphore(max(1, max_concurrent_normalize))
 
         os.makedirs(downloads_dir, exist_ok=True)
 
@@ -136,6 +164,33 @@ class DownloadManager:
         )
         thread.start()
         return job
+
+    def create_normalize_job(self, source_path, session_id) -> tuple[DownloadJob, bool]:
+        """
+        Start normalizing source_path, or return the job already doing so.
+        Returns (job, created). Raises ValueError for a file that is itself
+        a normalized output.
+        """
+        if normalizer.is_normalized_name(source_path):
+            raise ValueError("File is already a normalized copy")
+        with self._lock:
+            existing = self._normalizing.get(source_path)
+            if existing and not existing.is_finished:
+                return existing, False
+            job = DownloadJob(
+                download_id=str(uuid.uuid4()),
+                url="",
+                session_id=session_id,
+                audio_format=os.path.splitext(source_path)[1].lstrip(".").lower(),
+                kind="normalize",
+                source_path=source_path,
+                title=os.path.basename(source_path),
+            )
+            self._jobs[job.download_id] = job
+            self._normalizing[source_path] = job
+
+        threading.Thread(target=self._run_job, args=(job,), daemon=True).start()
+        return job, True
 
     def get_job(self, download_id) -> DownloadJob | None:
         return self._jobs.get(download_id)
@@ -184,6 +239,32 @@ class DownloadManager:
     # ------------------------------------------------------------------
 
     def _run_job(self, job: DownloadJob):
+        try:
+            if job.kind == "normalize":
+                self._run_normalize(job)
+            else:
+                self._run_download(job)
+        finally:
+            job.finished_at = datetime.now()
+            job.progress = 100.0 if job.status == JobStatus.COMPLETED else job.progress
+            # Release the subprocess handle (and its pipes) so finished
+            # jobs don't pin OS resources while they linger for status reads.
+            with job._lock:
+                if job._process is not None:
+                    for pipe in (job._process.stdout, job._process.stderr):
+                        try:
+                            if pipe:
+                                pipe.close()
+                        except OSError:
+                            pass
+                    job._process = None
+            if job.kind == "normalize":
+                with self._lock:
+                    if self._normalizing.get(job.source_path) is job:
+                        del self._normalizing[job.source_path]
+            job._done.set()
+
+    def _run_download(self, job: DownloadJob):
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now()
 
@@ -245,19 +326,144 @@ class DownloadManager:
             job.status = JobStatus.FAILED
             job.error = str(e)
             job.add_log(f"ERROR: {e}")
+
+    # ------------------------------------------------------------------
+    # Normalization – runs in a background thread
+    # ------------------------------------------------------------------
+
+    def _run_normalize(self, job: DownloadJob):
+        src = job.source_path
+        dst = normalizer.normalized_path_for(src)
+        tmp = dst + ".part"
+
+        job.stage = "Queued"
+        job.add_log(f"Normalize: {src}")
+        # Wait for a free slot so a batch request doesn't spawn dozens of
+        # ffmpeg processes at once; stay cancellable while queued.
+        while not self._normalize_slots.acquire(timeout=0.5):
+            if job.is_cancelled:
+                job.status = JobStatus.CANCELLED
+                job.stage = ""
+                job.add_log("Normalization cancelled by user.")
+                return
+
+        job.status = JobStatus.RUNNING
+        job.started_at = datetime.now()
+        try:
+            if job.is_cancelled:
+                raise _Cancelled()
+
+            job.stage = "Analyzing peak level"
+            job.add_log("Pass 1/2: measuring peak level")
+            rc, err = self._run_ffmpeg(
+                job, normalizer.analyze_command(self.ffmpeg_path, src), 0, 50)
+            if job.is_cancelled:
+                raise _Cancelled()
+            if rc != 0:
+                raise RuntimeError(f"ffmpeg analysis failed (exit code {rc})", err)
+            gain = normalizer.parse_gain(err)
+            if gain is None:
+                raise RuntimeError("Could not measure the peak level", err)
+            bitrate = normalizer.parse_bitrate(err)
+            job.add_log(f"Applying {gain:+.2f} dB of gain "
+                        f"(target peak {normalizer.TARGET_PEAK_DB:g} dB)")
+
+            job.stage = "Applying gain"
+            rc, err = self._run_ffmpeg(
+                job,
+                normalizer.apply_command(self.ffmpeg_path, src, tmp, gain, bitrate),
+                50, 100, normalizer.parse_duration(err))
+            if job.is_cancelled:
+                raise _Cancelled()
+            if rc != 0:
+                raise RuntimeError(f"ffmpeg failed (exit code {rc})", err)
+
+            # Publish atomically: the library never lists a half-written
+            # file, and a failed run never leaves one behind as "cached".
+            os.replace(tmp, dst)
+            job.result_file = os.path.relpath(dst, self.downloads_dir)
+            job.files_downloaded = [job.result_file]
+            job.current_file = os.path.basename(dst)
+            job.status = JobStatus.COMPLETED
+            job.add_log(f"Saved {job.result_file}")
+        except _Cancelled:
+            job.status = JobStatus.CANCELLED
+            job.add_log("Normalization cancelled by user.")
+        except FileNotFoundError as e:
+            job.status = JobStatus.FAILED
+            job.error = f"Tool not found: {e}. Is ffmpeg installed?"
+            job.add_log(f"ERROR: {job.error}")
+        except RuntimeError as e:
+            job.status = JobStatus.FAILED
+            job.error = str(e.args[0])
+            job.add_log(f"ERROR: {job.error}")
+            if len(e.args) > 1:
+                for line in str(e.args[1]).strip().splitlines()[-15:]:
+                    job.add_log(line)
+        except Exception as e:
+            job.status = JobStatus.FAILED
+            job.error = str(e)
+            job.add_log(f"ERROR: {e}")
         finally:
-            job.finished_at = datetime.now()
-            job.progress = 100.0 if job.status == JobStatus.COMPLETED else job.progress
-            # Release the subprocess handle (and its stdout pipe) so finished
-            # jobs don't pin OS resources while they linger for status reads.
-            with job._lock:
-                if job._process is not None:
-                    try:
-                        if job._process.stdout:
-                            job._process.stdout.close()
-                    except OSError:
-                        pass
-                    job._process = None
+            job.stage = ""
+            self._normalize_slots.release()
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def _run_ffmpeg(self, job: DownloadJob, cmd, pct_from, pct_to, duration=None):
+        """
+        Run one ffmpeg pass, mapping its -progress output onto
+        pct_from..pct_to of the job's progress. Returns (returncode, stderr).
+        """
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            bufsize=1,
+            start_new_session=True,  # new process group for clean kill
+        )
+        with job._lock:
+            job._process = process
+        if job.is_cancelled:
+            job.cancel()
+
+        # stderr carries the input header (duration, bitrate) and the
+        # volumedetect result; drain it in parallel so neither pipe blocks.
+        err_lines: list[str] = []
+
+        def drain_stderr():
+            for line in process.stderr:
+                err_lines.append(line)
+
+        reader = threading.Thread(target=drain_stderr, daemon=True)
+        reader.start()
+
+        for line in process.stdout:
+            key, _, value = line.strip().partition("=")
+            if key != "out_time_us" or not value.isdigit():
+                continue
+            if duration is None:
+                duration = normalizer.parse_duration("".join(err_lines))
+            if duration:
+                frac = min(1.0, int(value) / 1_000_000 / duration)
+                job.progress = round(pct_from + (pct_to - pct_from) * frac, 1)
+
+        process.wait()
+        reader.join(timeout=5)
+        for pipe in (process.stdout, process.stderr):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+        with job._lock:
+            if job._process is process:
+                job._process = None
+        if not job.is_cancelled:
+            job.progress = float(pct_to) if process.returncode == 0 else job.progress
+        return process.returncode, "".join(err_lines)
 
     def _build_command(self, job: DownloadJob) -> list[str]:
         quality = job.quality.split()[0] if job.quality else "0"
@@ -302,8 +508,10 @@ class DownloadManager:
     )
     # [download] Destination: /path/to/file.mp3
     _DEST_RE = re.compile(r"\[download\]\s+Destination:\s+(.+)")
-    # [ffmpeg] Destination: /path/to/file.mp3
-    _FFMPEG_DEST_RE = re.compile(r"\[ffmpeg\]\s+Destination:\s+(.+)")
+    # [ExtractAudio] Destination: /path/to/file.mp3
+    _AUDIO_DEST_RE = re.compile(r"\[ExtractAudio\]\s+Destination:\s+(.+)")
+    # [ExtractAudio] Not converting audio /path/to/file.m4a; file is already in target format m4a
+    _AUDIO_KEPT_RE = re.compile(r"\[ExtractAudio\]\s+Not converting audio\s+(.+?);")
 
     def _parse_progress(self, job: DownloadJob, line: str):
         m = self._PROGRESS_RE.search(line)
@@ -317,12 +525,16 @@ class DownloadManager:
 
         m = self._DEST_RE.search(line)
         if m:
-            job.current_file = os.path.basename(m.group(1).strip())
+            dest = m.group(1).strip()
+            job._destinations.append(dest)
+            job.current_file = os.path.basename(dest)
             return
 
-        m = self._FFMPEG_DEST_RE.search(line)
+        m = self._AUDIO_DEST_RE.search(line) or self._AUDIO_KEPT_RE.search(line)
         if m:
-            job.current_file = os.path.basename(m.group(1).strip())
+            out = m.group(1).strip()
+            job._outputs.append(out)
+            job.current_file = os.path.basename(out)
             return
 
     # ------------------------------------------------------------------
@@ -330,14 +542,24 @@ class DownloadManager:
     # ------------------------------------------------------------------
 
     def _collect_downloaded_files(self, job: DownloadJob):
-        """Walk downloads_dir and find MP3s created/modified after job started."""
-        if not job.started_at:
+        """Record the audio files this job produced (paths relative to downloads_dir)."""
+        # Prefer the files yt-dlp reported writing – a directory scan would
+        # also pick up other users' concurrent downloads and normalized copies.
+        for out in job._outputs:
+            if os.path.isfile(out):
+                rel = os.path.relpath(out, self.downloads_dir)
+                if rel not in job.files_downloaded:
+                    job.files_downloaded.append(rel)
+        if job.files_downloaded or not job.started_at:
             return
-        cutoff = job.started_at.timestamp() - 5  # 5 s buffer
 
+        # Fallback: files of the target format modified since the job started.
+        cutoff = job.started_at.timestamp() - 5  # 5 s buffer
         for root, _, files in os.walk(self.downloads_dir):
             for fname in files:
                 if not fname.lower().endswith(f".{job.audio_format}"):
+                    continue
+                if normalizer.is_normalized_name(fname):
                     continue
                 fpath = os.path.join(root, fname)
                 try:
@@ -349,11 +571,25 @@ class DownloadManager:
                     pass
 
     def _cleanup_partial_files(self, job: DownloadJob):
-        """Remove .part and .ytdl temp files left by cancelled downloads."""
-        for root, _, files in os.walk(self.downloads_dir):
-            for fname in files:
-                if fname.endswith(".part") or fname.endswith(".ytdl"):
+        """Remove the .part / .ytdl temp files this cancelled job left behind.
+        Only this job's own destinations are touched – other downloads may be
+        running concurrently in the same directory."""
+        for dest in job._destinations:
+            folder, prefix = os.path.split(dest)
+            try:
+                names = os.listdir(folder or ".")
+            except OSError:
+                continue
+            for fname in names:
+                if not fname.startswith(prefix):
+                    continue
+                rest = fname[len(prefix):]
+                if rest.startswith(".part") or rest == ".ytdl":
                     try:
-                        os.remove(os.path.join(root, fname))
+                        os.remove(os.path.join(folder, fname))
                     except OSError:
                         pass
+
+
+class _Cancelled(Exception):
+    """Internal: unwinds a normalize job after the user cancelled it."""

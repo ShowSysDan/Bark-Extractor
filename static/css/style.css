@@ -542,3 +542,17 @@ body.player-open {
   border-left-color: rgba(68, 147, 248, 0.35);
   padding: 0 .35rem;
 }
+
+.norm-badge {
+  display: inline-block;
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .4px;
+  background: #13261c;
+  color: #3fb950;
+  border: 1px solid #1f4d30;
+  border-radius: .25rem;
+  padding: .1em .4em;
+  margin-right: .45em;
+  vertical-align: middle;
+}
