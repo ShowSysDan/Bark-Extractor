@@ -7,9 +7,9 @@ import os
 import hashlib
 from datetime import datetime
 
-from bark_extractor.normalizer import is_normalized_name
+from bark_extractor import audio_ops
 
-AUDIO_EXTENSIONS = {".mp3", ".m4a", ".opus", ".flac", ".ogg", ".wav"}
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".opus", ".flac", ".ogg", ".wav", ".aiff"}
 
 
 class FileManager:
@@ -43,7 +43,7 @@ class FileManager:
                         "id": self.file_id(rel),
                         "name": fname,
                         "path": rel,
-                        "normalized": is_normalized_name(fname),
+                        "normalized": audio_ops.is_normalized_name(fname),
                         "size": stat.st_size,
                         "size_human": self._human_size(stat.st_size),
                         "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
@@ -95,6 +95,35 @@ class FileManager:
                     pass
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # Rename
+    # ------------------------------------------------------------------
+
+    def rename_file(self, file_id: str, new_name: str) -> dict:
+        """
+        Rename a file within its folder (the extension is kept). Returns the
+        file's new info dict. Raises LookupError if file_id is unknown,
+        ValueError for an invalid name, FileExistsError on a collision.
+        """
+        path = self.get_file_path(file_id)
+        if not path:
+            raise LookupError(file_id)
+        folder, old_name = os.path.split(path)
+        ext = os.path.splitext(old_name)[1]
+        name = audio_ops.clean_filename(new_name, ext)
+        # A normalized copy keeps its marker, so it still can't be
+        # normalized again after a rename.
+        if audio_ops.is_normalized_name(old_name) and not audio_ops.is_normalized_name(name):
+            name = audio_ops.normalized_path_for(name)
+        new_path = os.path.join(folder, name)
+        if new_path == path:
+            return self.get_file_info(file_id)
+        # Case-only renames are fine on case-insensitive filesystems too
+        if os.path.exists(new_path) and os.path.normcase(new_path) != os.path.normcase(path):
+            raise FileExistsError(name)
+        os.rename(path, new_path)
+        return self.get_file_info(self.file_id(os.path.relpath(new_path, self.downloads_dir)))
 
     # ------------------------------------------------------------------
     # Helpers

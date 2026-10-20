@@ -63,7 +63,9 @@
               <option value="mp3" selected>MP3</option>
               <option value="m4a">M4A (AAC)</option>
               <option value="opus">Opus</option>
+              <option value="ogg">OGG (Vorbis)</option>
               <option value="flac">FLAC</option>
+              <option value="wav">WAV</option>
             </select>
           </div>
 
@@ -136,6 +138,9 @@
                 <i class="bi bi-soundwave me-2"></i>Normalized (-5dB peak)
               </button>
             </li>
+            <li><hr class="dropdown-divider" /></li>
+            <li><h6 class="dropdown-header">Convert selected to</h6></li>
+            <li id="convertSelectedItems"><!-- filled by JS --></li>
           </ul>
         </div>
         <button class="btn btn-sm btn-outline-secondary" id="refreshBtn" title="Refresh list">
@@ -152,7 +157,7 @@
       <!-- Empty state -->
       <div id="filesEmpty" class="text-center py-5 text-muted" style="display:none">
         <i class="bi bi-music-note-list fs-1 d-block mb-2 opacity-25"></i>
-        No MP3 files yet – extract something above!
+        No audio files yet – extract something above!
       </div>
       <!-- File table -->
       <div id="filesTableWrap" style="display:none">
@@ -181,7 +186,7 @@
 
 <!-- ===== SETTINGS MODAL ===== -->
 <div class="modal fade" id="settingsModal" tabindex="-1">
-  <div class="modal-dialog">
+  <div class="modal-dialog modal-lg">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title"><i class="bi bi-gear me-2"></i>Settings</h5>
@@ -189,42 +194,198 @@
       </div>
       <div class="modal-body">
 
-        <h6 class="text-muted mb-3" style="font-size:.8rem;text-transform:uppercase;letter-spacing:.6px">
-          Syslog
-        </h6>
+        <ul class="nav nav-tabs mb-3" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabSystem" type="button" role="tab">
+              <i class="bi bi-cpu me-1"></i>System
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabSyslog" type="button" role="tab">
+              <i class="bi bi-broadcast me-1"></i>Syslog
+            </button>
+          </li>
+        </ul>
 
-        <div class="mb-3 form-check form-switch">
-          <input class="form-check-input" type="checkbox" id="syslogEnabled" />
-          <label class="form-check-label" for="syslogEnabled">Enable syslog</label>
-        </div>
-
-        <div id="syslogFields">
-          <div class="row g-3">
-            <div class="col-8">
-              <label for="syslogHost" class="form-label">Server host / IP</label>
-              <input type="text" class="form-control" id="syslogHost"
-                     placeholder="192.168.1.10" autocomplete="off" />
+        <div class="tab-content">
+          <!-- System / admin -->
+          <div class="tab-pane fade show active" id="tabSystem" role="tabpanel">
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <div class="admin-box">
+                  <div class="admin-box-title">Tools</div>
+                  <table class="admin-table">
+                    <tr><th>Bark Extractor</th><td id="adminAppVersion">–</td></tr>
+                    <tr><th>yt-dlp</th><td id="adminYtdlpVersion">–</td></tr>
+                    <tr><th>Last yt-dlp update</th><td id="adminYtdlpUpdated">–</td></tr>
+                    <tr><th>Auto-update</th><td id="adminAutoUpdate">–</td></tr>
+                    <tr><th>Deno</th><td id="adminDenoVersion">–</td></tr>
+                    <tr><th>FFmpeg</th><td id="adminFfmpegVersion">–</td></tr>
+                  </table>
+                  <div class="d-flex align-items-center gap-2 mt-2">
+                    <button class="btn btn-sm btn-outline-secondary" id="adminUpdateBtn">
+                      <i class="bi bi-arrow-repeat me-1"></i>Update yt-dlp now
+                    </button>
+                    <span class="small text-muted" id="adminUpdateStatus"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-6">
+                <div class="admin-box">
+                  <div class="admin-box-title">Storage</div>
+                  <table class="admin-table">
+                    <tr><th>Library</th><td id="adminLibrary">–</td></tr>
+                    <tr><th>Disk free</th><td id="adminDiskFree">–</td></tr>
+                    <tr><th>Active jobs</th><td id="adminActiveJobs">–</td></tr>
+                  </table>
+                  <div class="progress mt-2" style="height:.5rem" title="Disk used">
+                    <div class="progress-bar" id="adminDiskBar" style="width:0%"></div>
+                  </div>
+                  <div class="small text-muted mt-1 text-truncate" id="adminDownloadsDir"></div>
+                </div>
+              </div>
             </div>
-            <div class="col-4">
-              <label for="syslogPort" class="form-label">Port</label>
-              <input type="number" class="form-control" id="syslogPort"
-                     placeholder="514" min="1" max="65535" />
+            <div class="admin-box">
+              <div class="admin-box-title d-flex align-items-center">
+                Recent events
+                <button class="btn btn-link btn-sm ms-auto p-0 text-muted" id="adminRefreshBtn" title="Refresh">
+                  <i class="bi bi-arrow-clockwise"></i>
+                </button>
+              </div>
+              <div id="adminEvents" class="admin-events">
+                <div class="text-muted small">Loading…</div>
+              </div>
             </div>
           </div>
-          <div class="mt-2">
-            <small class="text-muted">
-              Events sent over UDP: service_started, download_started, download_completed, download_failed, download_cancelled, download_stop_requested, normalize_started, normalize_completed, normalize_failed, normalize_cancelled, normalize_stop_requested, file_downloaded, file_deleted, settings_saved.
-            </small>
+
+          <!-- Syslog -->
+          <div class="tab-pane fade" id="tabSyslog" role="tabpanel">
+            <div class="mb-3 form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="syslogEnabled" />
+              <label class="form-check-label" for="syslogEnabled">Enable syslog</label>
+            </div>
+
+            <div id="syslogFields">
+              <div class="row g-3">
+                <div class="col-8">
+                  <label for="syslogHost" class="form-label">Server host / IP</label>
+                  <input type="text" class="form-control" id="syslogHost"
+                         placeholder="192.168.1.10" autocomplete="off" />
+                </div>
+                <div class="col-4">
+                  <label for="syslogPort" class="form-label">Port</label>
+                  <input type="number" class="form-control" id="syslogPort"
+                         placeholder="514" min="1" max="65535" />
+                </div>
+              </div>
+              <div class="mt-2">
+                <small class="text-muted">
+                  Events sent over UDP: service_started; download_, normalize_, trim_ and convert_ started / completed / failed / cancelled / stop_requested; file_downloaded, file_renamed, file_deleted, files_zipped, settings_saved.
+                </small>
+              </div>
+            </div>
+
+            <div class="d-flex justify-content-end gap-2 mt-3">
+              <button class="btn btn-outline-secondary btn-sm" id="syslogTestBtn">
+                <i class="bi bi-send me-1"></i>Send test message
+              </button>
+              <button class="btn btn-primary btn-sm" id="settingsSaveBtn">
+                <i class="bi bi-check2 me-1"></i>Save
+              </button>
+            </div>
           </div>
         </div>
 
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== RENAME MODAL ===== -->
+<div class="modal fade" id="renameModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form class="modal-content" id="renameForm">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-pencil me-2"></i>Rename file</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label for="renameInput" class="form-label">New name</label>
+        <div class="input-group">
+          <input type="text" class="form-control" id="renameInput" autocomplete="off" required />
+          <span class="input-group-text" id="renameExt">.mp3</span>
+        </div>
+        <div class="form-text" id="renameHint"></div>
+      </div>
       <div class="modal-footer">
-        <button class="btn btn-outline-secondary btn-sm" id="syslogTestBtn">
-          <i class="bi bi-send me-1"></i>Send test message
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="renameSaveBtn">
+          <i class="bi bi-check2 me-1"></i>Rename
         </button>
-        <button class="btn btn-primary" id="settingsSaveBtn">
-          <i class="bi bi-check2 me-1"></i>Save
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ===== TRIM MODAL ===== -->
+<div class="modal fade" id="trimModal" tabindex="-1">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title text-truncate"><i class="bi bi-scissors me-2"></i>Trim / Fade – <span id="trimTitle"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="trim-wave-wrap" id="trimWaveWrap">
+          <canvas id="trimWave"></canvas>
+          <div class="trim-wave-msg" id="trimWaveMsg">
+            <div class="spinner-border spinner-border-sm me-2"></div> Loading waveform…
+          </div>
+        </div>
+        <div class="small text-muted mt-1 mb-3">
+          Drag across the waveform to select, drag the edges to adjust, click to move the playhead.
+        </div>
+
+        <div class="row g-3 align-items-end">
+          <div class="col-6 col-md-2">
+            <label class="form-label" for="trimStart">Start</label>
+            <input type="text" class="form-control form-control-sm" id="trimStart" placeholder="0:00.0" />
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label" for="trimEnd">End</label>
+            <input type="text" class="form-control form-control-sm" id="trimEnd" placeholder="0:00.0" />
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label" for="trimFadeIn">Fade in (s)</label>
+            <input type="number" class="form-control form-control-sm" id="trimFadeIn" min="0" step="0.5" value="0" />
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label" for="trimFadeOut">Fade out (s)</label>
+            <input type="number" class="form-control form-control-sm" id="trimFadeOut" min="0" step="0.5" value="0" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="trimName">Save as</label>
+            <div class="input-group input-group-sm">
+              <input type="text" class="form-control" id="trimName" autocomplete="off" />
+              <span class="input-group-text" id="trimExt">.mp3</span>
+            </div>
+          </div>
+        </div>
+        <div class="d-flex align-items-center gap-2 mt-3 flex-wrap">
+          <button class="btn btn-sm btn-outline-success" id="trimPreviewBtn">
+            <i class="bi bi-play-fill me-1"></i>Preview selection
+          </button>
+          <button class="btn btn-sm btn-outline-secondary" id="trimPlayBtn">
+            <i class="bi bi-play me-1"></i>Play from playhead
+          </button>
+          <span class="small text-muted ms-2" id="trimInfo"></span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span class="small text-muted me-auto">The original file is kept; the trimmed copy is saved next to it.</span>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="trimSaveBtn">
+          <i class="bi bi-scissors me-1"></i>Save trimmed copy
         </button>
       </div>
     </div>
@@ -277,8 +438,10 @@
       <div class="player-title text-truncate" id="playerTitle"></div>
     </div>
 
-    <!-- Seek -->
-    <input type="range" id="playerSeek" class="player-range flex-grow-1" value="0" min="0" max="100" step="0.1">
+    <!-- Seek (waveform) -->
+    <div class="player-wave flex-grow-1" id="playerWaveWrap" title="Click to seek">
+      <canvas id="playerWave"></canvas>
+    </div>
 
     <!-- Time -->
     <span id="playerTime" class="player-time text-nowrap">0:00 / 0:00</span>
