@@ -5,6 +5,7 @@ A yt-dlp powered MP3 downloader with a web UI served on port 5100.
 """
 
 import os
+import re
 import json
 import time
 import uuid
@@ -15,6 +16,7 @@ import threading
 from collections import deque
 from pathlib import Path
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from flask import (
     Flask,
@@ -52,6 +54,12 @@ FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 YTDLP_PATH = os.getenv("YTDLP_PATH", "yt-dlp")
 PORT = int(os.getenv("PORT", 5100))
 SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
+
+# Lightweight session gate (no password). When enabled (the default), the UI
+# and every API require a session that the user establishes by clicking
+# "Enter" on the login page – enough to stop the APIs being hit directly in a
+# trusted environment. Set AUTH_ENABLED=false to turn the gate off entirely.
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").strip().lower() != "false"
 
 SYSLOG_ENABLED = os.getenv("SYSLOG_ENABLED", "false").lower() == "true"
 SYSLOG_HOST    = os.getenv("SYSLOG_HOST", "localhost")
@@ -118,6 +126,58 @@ def get_session_id() -> str:
     if "session_id" not in session:
         session["session_id"] = str(uuid.uuid4())
     return session["session_id"]
+
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+# A passwordless session gate: the user clicks "Enter" to establish a session,
+# after which the UI and APIs work. It stops the APIs being hit directly
+# (without a session cookie); it is not a password and assumes a trusted
+# environment. Endpoints that must stay reachable without a session:
+_PUBLIC_ENDPOINTS = {"login", "static"}
+
+
+def _safe_next(target: str | None) -> str:
+    """Only allow same-site relative redirects (no //host, no scheme)."""
+    if target and target.startswith("/") and not target.startswith("//"):
+        return target
+    return url_for("index")
+
+
+@app.before_request
+def _require_login():
+    if not AUTH_ENABLED:
+        return
+    if request.endpoint in _PUBLIC_ENDPOINTS:
+        return
+    if session.get("authenticated"):
+        return
+    # No session yet: APIs get a clean 401, pages are sent to the login screen.
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Authentication required"}), 401
+    return redirect(url_for("login", next=request.path))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not AUTH_ENABLED or session.get("authenticated"):
+        return redirect(_safe_next(request.args.get("next")))
+
+    if request.method == "POST":
+        session["authenticated"] = True
+        session.permanent = True
+        get_session_id()
+        syslog_sender.send("session_started")
+        return redirect(_safe_next(request.args.get("next")))
+
+    return render_template("login.html", app_version=APP_VERSION)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +286,19 @@ def _sse_poller(download_id: str):
 # Settings helpers
 # ---------------------------------------------------------------------------
 
+# A syslog target is a hostname or IP(:port is handled separately). Anything
+# outside this set – notably newlines – is rejected so a value can never
+# inject extra lines into .env (which systemd loads as EnvironmentFile).
+_HOST_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+
+
 def _update_env_file(updates: dict):
     """Update or add key=value pairs in .env, creating the file if needed."""
+    # Defence in depth: never write a key or value that could add or break
+    # .env lines, regardless of what a caller validated upstream.
+    for key, val in updates.items():
+        if any(c in "\r\n" for c in f"{key}{val}"):
+            raise ValueError("env values cannot contain newlines")
     env_path = BASE_DIR / ".env"
     lines = env_path.read_text().splitlines() if env_path.exists() else []
 
@@ -278,6 +349,8 @@ def api_save_settings():
         return jsonify({"error": "Port must be an integer between 1 and 65535"}), 400
     if not host:
         return jsonify({"error": "Host is required"}), 400
+    if not _HOST_RE.match(host):
+        return jsonify({"error": "Host must be a valid hostname or IP address"}), 400
 
     try:
         _update_env_file({
@@ -317,7 +390,8 @@ def api_test_syslog():
 @app.route("/")
 def index():
     get_session_id()  # ensure session is initialised
-    return render_template("index.html", app_version=APP_VERSION)
+    return render_template("index.html", app_version=APP_VERSION,
+                           auth_enabled=AUTH_ENABLED)
 
 
 @app.route("/api/version")
@@ -339,6 +413,12 @@ def api_start_download():
     url = (data.get("url") or "").strip()
     if not url:
         return jsonify({"error": "URL is required"}), 400
+    # Only fetch over the web. Without this, yt-dlp's generic extractor will
+    # happily open file:// paths (and similar), turning a "download" into a
+    # read of local files on the server.
+    scheme = urlsplit(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        return jsonify({"error": "URL must start with http:// or https://"}), 400
 
     quality = str(data.get("quality", "0"))
     if quality not in ("0", "5", "9"):
@@ -480,14 +560,30 @@ def api_get_file(file_id):
     return jsonify(info)
 
 
+def _safe_file_path(file_id: str) -> str | None:
+    """Map a library file id to its absolute path, or None if the id is
+    unknown or (via a symlink) resolves outside downloads_dir."""
+    path = file_manager.get_file_path(file_id)
+    if not path:
+        return None
+    # Path traversal guard: the file must live inside downloads_dir, even
+    # after following any symlink.
+    real, root = os.path.realpath(path), os.path.realpath(DOWNLOADS_DIR)
+    try:
+        if os.path.commonpath([real, root]) != root:
+            return None
+    except ValueError:
+        # Different drives / no common path (Windows): treat as outside.
+        return None
+    return path
+
+
 def _resolve_file_or_abort(file_id: str) -> str:
     """Map a library file id to its absolute path, or abort with 404/403."""
     path = file_manager.get_file_path(file_id)
     if not path:
         abort(404)
-    # Path traversal guard: the file must live inside downloads_dir
-    real, root = os.path.realpath(path), os.path.realpath(DOWNLOADS_DIR)
-    if os.path.commonpath([real, root]) != root:
+    if _safe_file_path(file_id) is None:
         abort(403)
     return path
 
@@ -662,7 +758,13 @@ def api_zip_files():
     if not ids or len(ids) > 1000:
         return jsonify({"error": "Select between 1 and 1000 files"}), 400
     index = {f["id"]: f for f in file_manager.list_files()}
-    entries = [index[i]["path"] for i in dict.fromkeys(ids) if i in index]
+    # Resolve each id through the same traversal/symlink guard the other
+    # file routes use, so the ZIP can never read outside downloads_dir.
+    entries = []
+    for i in dict.fromkeys(ids):
+        if i not in index or _safe_file_path(i) is None:
+            continue
+        entries.append(index[i]["path"])
     if not entries:
         abort(404)
 
@@ -833,6 +935,18 @@ def _startup():
     a plain `git pull && systemctl restart bark-extractor` picks everything up."""
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+    # Auth posture
+    if AUTH_ENABLED:
+        if not os.getenv("SECRET_KEY"):
+            _tools_log("WARNING: the session gate is on but SECRET_KEY is not set "
+                       "– a random key is generated each start, so sessions won't "
+                       "survive a restart. Set SECRET_KEY in .env.")
+        else:
+            print("  [auth] Session gate is ENABLED", flush=True)
+    else:
+        _tools_log("WARNING: AUTH_ENABLED=false – the UI and all APIs are open "
+                   "to anyone who can reach this port.")
 
     # FFmpeg presence check (warn only – the UI still serves the library)
     global _FFMPEG_VERSION

@@ -36,6 +36,11 @@ class FileManager:
                 if os.path.splitext(fname)[1].lower() not in AUDIO_EXTENSIONS:
                     continue
                 fpath = os.path.join(root, fname)
+                # Never index symlinks: following one could expose a file
+                # outside downloads_dir (the serving routes guard against
+                # this too, but keeping them out of the library is cleaner).
+                if os.path.islink(fpath):
+                    continue
                 rel = os.path.relpath(fpath, self.downloads_dir)
                 try:
                     stat = os.stat(fpath)
