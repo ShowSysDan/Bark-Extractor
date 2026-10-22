@@ -6,7 +6,6 @@ A yt-dlp powered MP3 downloader with a web UI served on port 5100.
 
 import os
 import re
-import hmac
 import json
 import time
 import uuid
@@ -56,11 +55,11 @@ YTDLP_PATH = os.getenv("YTDLP_PATH", "yt-dlp")
 PORT = int(os.getenv("PORT", 5100))
 SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
 
-# Optional shared-password login. When AUTH_PASSWORD is set, the web UI and
-# every API require a logged-in session; leave it empty to disable auth
-# (e.g. when the app already sits behind an authenticated proxy).
-AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "").strip()
-AUTH_ENABLED  = bool(AUTH_PASSWORD)
+# Lightweight session gate (no password). When enabled (the default), the UI
+# and every API require a session that the user establishes by clicking
+# "Enter" on the login page – enough to stop the APIs being hit directly in a
+# trusted environment. Set AUTH_ENABLED=false to turn the gate off entirely.
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").strip().lower() != "false"
 
 SYSLOG_ENABLED = os.getenv("SYSLOG_ENABLED", "false").lower() == "true"
 SYSLOG_HOST    = os.getenv("SYSLOG_HOST", "localhost")
@@ -132,40 +131,11 @@ def get_session_id() -> str:
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
-# A single shared password gates the whole app. Endpoints that must stay
-# reachable without a session (the login page itself and static assets).
+# A passwordless session gate: the user clicks "Enter" to establish a session,
+# after which the UI and APIs work. It stops the APIs being hit directly
+# (without a session cookie); it is not a password and assumes a trusted
+# environment. Endpoints that must stay reachable without a session:
 _PUBLIC_ENDPOINTS = {"login", "static"}
-
-# Lightweight per-IP brute-force throttle: after _MAX_FAILS failures within
-# _FAIL_WINDOW seconds, that IP is locked out until the window passes.
-_MAX_FAILS = 5
-_FAIL_WINDOW = 300
-_login_fails: dict[str, list[float]] = {}
-_login_fails_lock = threading.Lock()
-
-
-def _client_ip() -> str:
-    # X-Forwarded-For first hop when behind a trusted proxy, else peer addr.
-    fwd = request.headers.get("X-Forwarded-For", "")
-    return (fwd.split(",")[0].strip() if fwd else request.remote_addr) or "unknown"
-
-
-def _login_blocked(ip: str) -> bool:
-    now = time.time()
-    with _login_fails_lock:
-        recent = [t for t in _login_fails.get(ip, []) if now - t < _FAIL_WINDOW]
-        _login_fails[ip] = recent
-        return len(recent) >= _MAX_FAILS
-
-
-def _record_login_fail(ip: str):
-    with _login_fails_lock:
-        _login_fails.setdefault(ip, []).append(time.time())
-
-
-def _password_ok(candidate: str) -> bool:
-    # Constant-time compare so timing can't reveal the password length/prefix.
-    return bool(AUTH_PASSWORD) and hmac.compare_digest(candidate, AUTH_PASSWORD)
 
 
 def _safe_next(target: str | None) -> str:
@@ -183,7 +153,7 @@ def _require_login():
         return
     if session.get("authenticated"):
         return
-    # Unauthenticated: APIs get a clean 401, pages are sent to the login form.
+    # No session yet: APIs get a clean 401, pages are sent to the login screen.
     if request.path.startswith("/api/"):
         return jsonify({"error": "Authentication required"}), 401
     return redirect(url_for("login", next=request.path))
@@ -194,27 +164,14 @@ def login():
     if not AUTH_ENABLED or session.get("authenticated"):
         return redirect(_safe_next(request.args.get("next")))
 
-    error = None
-    status = 200
     if request.method == "POST":
-        ip = _client_ip()
-        if _login_blocked(ip):
-            syslog_sender.send(f"login_blocked ip={ip}")
-            error = "Too many attempts. Please wait a few minutes and try again."
-            status = 429
-        elif _password_ok(request.form.get("password", "")):
-            session["authenticated"] = True
-            session.permanent = True
-            get_session_id()
-            syslog_sender.send(f"login_success ip={ip}")
-            return redirect(_safe_next(request.args.get("next")))
-        else:
-            _record_login_fail(ip)
-            syslog_sender.send(f"login_failed ip={ip}")
-            error = "Incorrect password."
-            status = 401
+        session["authenticated"] = True
+        session.permanent = True
+        get_session_id()
+        syslog_sender.send("session_started")
+        return redirect(_safe_next(request.args.get("next")))
 
-    return render_template("login.html", error=error, app_version=APP_VERSION), status
+    return render_template("login.html", app_version=APP_VERSION)
 
 
 @app.route("/logout")
@@ -982,15 +939,14 @@ def _startup():
     # Auth posture
     if AUTH_ENABLED:
         if not os.getenv("SECRET_KEY"):
-            _tools_log("WARNING: AUTH_PASSWORD is set but SECRET_KEY is not – a "
-                       "random key is generated each start, so logins won't "
+            _tools_log("WARNING: the session gate is on but SECRET_KEY is not set "
+                       "– a random key is generated each start, so sessions won't "
                        "survive a restart. Set SECRET_KEY in .env.")
         else:
-            print("  [auth] Shared-password login is ENABLED", flush=True)
+            print("  [auth] Session gate is ENABLED", flush=True)
     else:
-        _tools_log("WARNING: no AUTH_PASSWORD set – the UI and all APIs are open "
-                   "to anyone who can reach this port. Set AUTH_PASSWORD in .env "
-                   "to require a login.")
+        _tools_log("WARNING: AUTH_ENABLED=false – the UI and all APIs are open "
+                   "to anyone who can reach this port.")
 
     # FFmpeg presence check (warn only – the UI still serves the library)
     global _FFMPEG_VERSION

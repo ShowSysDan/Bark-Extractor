@@ -19,21 +19,14 @@
 
   <div class="card shadow-sm">
     <div class="card-header d-flex align-items-center gap-2">
-      <i class="bi bi-lock"></i>
-      <strong>Sign in</strong>
+      <i class="bi bi-box-arrow-in-right"></i>
+      <strong>Enter</strong>
     </div>
     <div class="card-body">
-      {% if error %}
-      <div class="alert alert-danger py-2" role="alert">
-        <i class="bi bi-exclamation-triangle me-1"></i>{{ error }}
-      </div>
-      {% endif %}
-      <form method="POST" action="{{ url_for('login', next=request.args.get('next','')) }}" novalidate>
-        <label for="password" class="form-label">Password</label>
-        <input type="password" class="form-control mb-3" id="password" name="password"
-               autocomplete="current-password" autofocus required />
-        <button type="submit" class="btn btn-primary w-100">
-          <i class="bi bi-box-arrow-in-right me-1"></i>Sign in
+      <p class="text-muted mb-3">Click below to start a session.</p>
+      <form method="POST" action="{{ url_for('login', next=request.args.get('next','')) }}">
+        <button type="submit" class="btn btn-primary w-100" autofocus>
+          <i class="bi bi-box-arrow-in-right me-1"></i>Enter
         </button>
       </form>
     </div>
