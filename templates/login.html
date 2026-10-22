@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in · Bark Extractor 🐾</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap-icons.min.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+
+<div class="container" style="max-width: 420px;">
+  <div class="text-center mt-5 mb-4">
+    <div style="font-size: 3rem; line-height: 1;">🐾</div>
+    <h1 class="h4 mt-2 mb-0">Bark Extractor</h1>
+    <small class="text-muted">MP3 Downloader</small>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-header d-flex align-items-center gap-2">
+      <i class="bi bi-lock"></i>
+      <strong>Sign in</strong>
+    </div>
+    <div class="card-body">
+      {% if error %}
+      <div class="alert alert-danger py-2" role="alert">
+        <i class="bi bi-exclamation-triangle me-1"></i>{{ error }}
+      </div>
+      {% endif %}
+      <form method="POST" action="{{ url_for('login', next=request.args.get('next','')) }}" novalidate>
+        <label for="password" class="form-label">Password</label>
+        <input type="password" class="form-control mb-3" id="password" name="password"
+               autocomplete="current-password" autofocus required />
+        <button type="submit" class="btn btn-primary w-100">
+          <i class="bi bi-box-arrow-in-right me-1"></i>Sign in
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <p class="text-center text-muted mt-3 mb-0">
+    <small>Bark Extractor v{{ app_version }}</small>
+  </p>
+</div>
+
+</body>
+</html>

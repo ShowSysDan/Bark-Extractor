@@ -5,6 +5,25 @@
 'use strict';
 
 // ----------------------------------------------------------------
+// Auth: if the session expires, any API call returns 401 – send the
+// user to the login page (preserving where they were) instead of
+// letting the UI silently fail.
+// ----------------------------------------------------------------
+(() => {
+  const nativeFetch = window.fetch.bind(window);
+  let redirecting = false;
+  window.fetch = async (...args) => {
+    const res = await nativeFetch(...args);
+    if (res.status === 401 && !redirecting) {
+      redirecting = true;
+      const next = encodeURIComponent(location.pathname + location.search);
+      location.href = `/login?next=${next}`;
+    }
+    return res;
+  };
+})();
+
+// ----------------------------------------------------------------
 // Utilities
 // ----------------------------------------------------------------
 
