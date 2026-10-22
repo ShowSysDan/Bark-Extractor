@@ -18,6 +18,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
+from itsdangerous import URLSafeTimedSerializer, BadSignature
+
 from flask import (
     Flask,
     Response,
@@ -53,7 +55,36 @@ SESSIONS_DIR  = str(Path(os.getenv("SESSIONS_DIR",  str(BASE_DIR / "sessions")))
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 YTDLP_PATH = os.getenv("YTDLP_PATH", "yt-dlp")
 PORT = int(os.getenv("PORT", 5100))
-SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
+
+
+def _resolve_secret_key() -> str:
+    """The key used to sign the auth cookie. Prefer SECRET_KEY from the env;
+    otherwise persist an auto-generated key to disk so it stays the same
+    across restarts and across worker processes. A per-process random key
+    would make every restart (and every extra worker) reject cookies signed
+    elsewhere, which looks exactly like "login does nothing"."""
+    env = os.getenv("SECRET_KEY")
+    if env:
+        return env
+    key_file = BASE_DIR / ".secret_key"
+    try:
+        if key_file.exists():
+            saved = key_file.read_text().strip()
+            if saved:
+                return saved
+        key = os.urandom(32).hex()
+        key_file.write_text(key)
+        try:
+            os.chmod(key_file, 0o600)
+        except OSError:
+            pass
+        return key
+    except OSError:
+        # Can't persist – fall back to a process-local random key.
+        return os.urandom(32).hex()
+
+
+SECRET_KEY = _resolve_secret_key()
 
 # Lightweight session gate (no password). When enabled (the default), the UI
 # and every API require a session that the user establishes by clicking
@@ -133,9 +164,27 @@ def get_session_id() -> str:
 # ---------------------------------------------------------------------------
 # A passwordless session gate: the user clicks "Enter" to establish a session,
 # after which the UI and APIs work. It stops the APIs being hit directly
-# (without a session cookie); it is not a password and assumes a trusted
-# environment. Endpoints that must stay reachable without a session:
+# (without the gate cookie); it is not a password and assumes a trusted
+# environment. Endpoints that must stay reachable without the cookie:
 _PUBLIC_ENDPOINTS = {"login", "static"}
+
+# The gate is a self-contained signed cookie, not a server-side session, so it
+# works even if the Flask-Session store isn't writable or is split across
+# workers – the only thing that must be stable is SECRET_KEY (see above).
+_AUTH_COOKIE = "bark_auth"
+_AUTH_MAX_AGE = 7 * 24 * 3600  # seconds
+_auth_signer = URLSafeTimedSerializer(SECRET_KEY, salt="bark-extractor-auth")
+
+
+def _is_authenticated() -> bool:
+    token = request.cookies.get(_AUTH_COOKIE)
+    if not token:
+        return False
+    try:
+        _auth_signer.loads(token, max_age=_AUTH_MAX_AGE)
+        return True
+    except BadSignature:  # also covers SignatureExpired
+        return False
 
 
 def _safe_next(target: str | None) -> str:
@@ -151,7 +200,7 @@ def _require_login():
         return
     if request.endpoint in _PUBLIC_ENDPOINTS:
         return
-    if session.get("authenticated"):
+    if _is_authenticated():
         return
     # No session yet: APIs get a clean 401, pages are sent to the login screen.
     if request.path.startswith("/api/"):
@@ -161,15 +210,15 @@ def _require_login():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if not AUTH_ENABLED or session.get("authenticated"):
+    if not AUTH_ENABLED or _is_authenticated():
         return redirect(_safe_next(request.args.get("next")))
 
     if request.method == "POST":
-        session["authenticated"] = True
-        session.permanent = True
-        get_session_id()
+        resp = redirect(_safe_next(request.args.get("next")))
+        resp.set_cookie(_AUTH_COOKIE, _auth_signer.dumps("ok"),
+                        max_age=_AUTH_MAX_AGE, httponly=True, samesite="Lax")
         syslog_sender.send("session_started")
-        return redirect(_safe_next(request.args.get("next")))
+        return resp
 
     return render_template("login.html", app_version=APP_VERSION)
 
@@ -177,7 +226,9 @@ def login():
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("login"))
+    resp = redirect(url_for("login"))
+    resp.delete_cookie(_AUTH_COOKIE)
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -938,12 +989,8 @@ def _startup():
 
     # Auth posture
     if AUTH_ENABLED:
-        if not os.getenv("SECRET_KEY"):
-            _tools_log("WARNING: the session gate is on but SECRET_KEY is not set "
-                       "– a random key is generated each start, so sessions won't "
-                       "survive a restart. Set SECRET_KEY in .env.")
-        else:
-            print("  [auth] Session gate is ENABLED", flush=True)
+        src = "SECRET_KEY env" if os.getenv("SECRET_KEY") else f"{BASE_DIR / '.secret_key'}"
+        print(f"  [auth] Session gate is ENABLED (signing key from {src})", flush=True)
     else:
         _tools_log("WARNING: AUTH_ENABLED=false – the UI and all APIs are open "
                    "to anyone who can reach this port.")

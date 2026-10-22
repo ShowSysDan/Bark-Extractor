@@ -24,3 +24,6 @@ sessions/
 # Managed external tools – downloaded on startup / by setup.sh, never tracked
 /yt-dlp
 /bin/
+
+# Auto-generated Flask signing key
+.secret_key
