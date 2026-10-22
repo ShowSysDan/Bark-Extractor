@@ -5,6 +5,7 @@ A yt-dlp powered MP3 downloader with a web UI served on port 5100.
 """
 
 import os
+import re
 import json
 import time
 import uuid
@@ -15,6 +16,7 @@ import threading
 from collections import deque
 from pathlib import Path
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from flask import (
     Flask,
@@ -226,8 +228,19 @@ def _sse_poller(download_id: str):
 # Settings helpers
 # ---------------------------------------------------------------------------
 
+# A syslog target is a hostname or IP(:port is handled separately). Anything
+# outside this set – notably newlines – is rejected so a value can never
+# inject extra lines into .env (which systemd loads as EnvironmentFile).
+_HOST_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+
+
 def _update_env_file(updates: dict):
     """Update or add key=value pairs in .env, creating the file if needed."""
+    # Defence in depth: never write a key or value that could add or break
+    # .env lines, regardless of what a caller validated upstream.
+    for key, val in updates.items():
+        if any(c in "\r\n" for c in f"{key}{val}"):
+            raise ValueError("env values cannot contain newlines")
     env_path = BASE_DIR / ".env"
     lines = env_path.read_text().splitlines() if env_path.exists() else []
 
@@ -278,6 +291,8 @@ def api_save_settings():
         return jsonify({"error": "Port must be an integer between 1 and 65535"}), 400
     if not host:
         return jsonify({"error": "Host is required"}), 400
+    if not _HOST_RE.match(host):
+        return jsonify({"error": "Host must be a valid hostname or IP address"}), 400
 
     try:
         _update_env_file({
@@ -339,6 +354,12 @@ def api_start_download():
     url = (data.get("url") or "").strip()
     if not url:
         return jsonify({"error": "URL is required"}), 400
+    # Only fetch over the web. Without this, yt-dlp's generic extractor will
+    # happily open file:// paths (and similar), turning a "download" into a
+    # read of local files on the server.
+    scheme = urlsplit(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        return jsonify({"error": "URL must start with http:// or https://"}), 400
 
     quality = str(data.get("quality", "0"))
     if quality not in ("0", "5", "9"):
@@ -480,14 +501,30 @@ def api_get_file(file_id):
     return jsonify(info)
 
 
+def _safe_file_path(file_id: str) -> str | None:
+    """Map a library file id to its absolute path, or None if the id is
+    unknown or (via a symlink) resolves outside downloads_dir."""
+    path = file_manager.get_file_path(file_id)
+    if not path:
+        return None
+    # Path traversal guard: the file must live inside downloads_dir, even
+    # after following any symlink.
+    real, root = os.path.realpath(path), os.path.realpath(DOWNLOADS_DIR)
+    try:
+        if os.path.commonpath([real, root]) != root:
+            return None
+    except ValueError:
+        # Different drives / no common path (Windows): treat as outside.
+        return None
+    return path
+
+
 def _resolve_file_or_abort(file_id: str) -> str:
     """Map a library file id to its absolute path, or abort with 404/403."""
     path = file_manager.get_file_path(file_id)
     if not path:
         abort(404)
-    # Path traversal guard: the file must live inside downloads_dir
-    real, root = os.path.realpath(path), os.path.realpath(DOWNLOADS_DIR)
-    if os.path.commonpath([real, root]) != root:
+    if _safe_file_path(file_id) is None:
         abort(403)
     return path
 
@@ -662,7 +699,13 @@ def api_zip_files():
     if not ids or len(ids) > 1000:
         return jsonify({"error": "Select between 1 and 1000 files"}), 400
     index = {f["id"]: f for f in file_manager.list_files()}
-    entries = [index[i]["path"] for i in dict.fromkeys(ids) if i in index]
+    # Resolve each id through the same traversal/symlink guard the other
+    # file routes use, so the ZIP can never read outside downloads_dir.
+    entries = []
+    for i in dict.fromkeys(ids):
+        if i not in index or _safe_file_path(i) is None:
+            continue
+        entries.append(index[i]["path"])
     if not entries:
         abort(404)
 
